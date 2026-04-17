@@ -1,0 +1,1550 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CS2 饰品交易监控 Demo</title>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+  <style>
+    :root {
+      --bg: #f3f7f7;
+      --surface: #ffffff;
+      --soft: #edf6f5;
+      --ink: #151a1f;
+      --muted: #66757d;
+      --line: #d7e3e2;
+      --teal: #0b8f86;
+      --green: #1f9d66;
+      --red: #d64f4f;
+      --yellow: #c79b1f;
+      --cyan: #2b8fb8;
+      --black: #101316;
+      --shadow: 0 16px 40px rgba(18, 25, 28, 0.08);
+      --radius: 8px;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: linear-gradient(180deg, rgba(11, 143, 134, 0.11), transparent 330px),
+        var(--bg);
+      font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", Arial, sans-serif;
+      font-size: 15px;
+      line-height: 1.5;
+      letter-spacing: 0;
+    }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    img { display: block; max-width: 100%; }
+
+    .app {
+      width: min(1680px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 18px 0 36px;
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.94);
+      box-shadow: var(--shadow);
+      position: sticky;
+      top: 10px;
+      z-index: 10;
+      backdrop-filter: blur(12px);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+    .brand-mark {
+      width: 42px;
+      height: 42px;
+      border-radius: var(--radius);
+      background: var(--black);
+      color: #fff;
+      display: grid;
+      place-items: center;
+      font-weight: 800;
+      flex: 0 0 auto;
+    }
+    .brand h1 {
+      margin: 0;
+      font-size: 18px;
+      line-height: 1.25;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .brand p {
+      margin: 2px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .top-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .pill, .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 30px;
+      padding: 6px 10px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 0 4px rgba(31, 157, 102, 0.14);
+    }
+    .button {
+      border: 1px solid transparent;
+      border-radius: var(--radius);
+      min-height: 38px;
+      padding: 8px 12px;
+      color: #fff;
+      background: var(--teal);
+      transition: transform 160ms ease;
+    }
+    .button:hover { transform: translateY(-1px); }
+    .button.ghost {
+      color: var(--teal);
+      background: #fff;
+      border-color: #b8cac8;
+    }
+    .button.danger { background: var(--red); }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: 300px minmax(0, 1fr) 360px;
+      gap: 16px;
+      margin-top: 16px;
+      align-items: start;
+    }
+    .sidebar, .right-rail {
+      display: grid;
+      gap: 16px;
+      position: sticky;
+      top: 90px;
+    }
+    .panel, .main-panel, .wide-panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.95);
+      box-shadow: var(--shadow);
+    }
+    .panel, .wide-panel { padding: 14px; }
+    .main-panel { min-width: 0; padding: 16px; }
+    .panel-title, .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .panel-title h2, .section-title h2 {
+      margin: 0;
+      font-size: 15px;
+    }
+    .panel-title span, .section-title p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .search-box {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 8px 10px;
+      margin-bottom: 12px;
+      background: #fff;
+    }
+    .search-box input {
+      width: 100%;
+      min-width: 0;
+      border: 0;
+      outline: 0;
+      background: transparent;
+      color: var(--ink);
+    }
+    .watchlist { display: grid; gap: 10px; }
+    .watch-item {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 52px minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 9px;
+      background: #fff;
+      color: var(--ink);
+      text-align: left;
+    }
+    .watch-item.active {
+      border-color: rgba(11, 143, 134, 0.58);
+      background: var(--soft);
+    }
+    .watch-item img, .skin-art {
+      object-fit: contain;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #f7fbfb;
+    }
+    .watch-item img { width: 52px; height: 52px; }
+    .watch-name {
+      display: block;
+      font-weight: 700;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .watch-meta {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .risk-tag, .alert-level {
+      display: inline-grid;
+      place-items: center;
+      border-radius: var(--radius);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .risk-tag { min-width: 44px; height: 28px; padding: 0 8px; }
+    .alert-level { width: 34px; height: 26px; }
+    .low { background: var(--green); }
+    .mid { background: var(--yellow); color: #222; }
+    .high { background: var(--red); }
+
+    .skin-head {
+      display: grid;
+      grid-template-columns: 108px minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    .skin-art {
+      width: 108px;
+      height: 108px;
+      padding: 8px;
+    }
+    .skin-copy { min-width: 0; }
+    .skin-copy h2 {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+    .skin-copy p { margin: 6px 0 0; color: var(--muted); }
+    .skin-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin: 14px 0;
+    }
+    .metric {
+      min-height: 92px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+    }
+    .metric label {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+    .metric strong {
+      display: block;
+      font-size: 20px;
+      line-height: 1.15;
+      overflow-wrap: anywhere;
+    }
+    .metric small {
+      display: block;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .positive { color: var(--green); }
+    .negative { color: var(--red); }
+    .chart-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 12px 0;
+      flex-wrap: wrap;
+    }
+    .segmented {
+      display: inline-flex;
+      gap: 4px;
+      padding: 4px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+    }
+    .segmented button {
+      min-height: 30px;
+      border: 0;
+      border-radius: 6px;
+      padding: 6px 10px;
+      background: transparent;
+      color: var(--muted);
+    }
+    .segmented button.active { background: var(--black); color: #fff; }
+    .legend {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .legend i {
+      display: inline-block;
+      width: 18px;
+      height: 3px;
+      margin-right: 6px;
+      border-radius: 2px;
+      vertical-align: middle;
+    }
+    .chart-box {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+      padding: 10px;
+      min-width: 0;
+    }
+    #priceChart { height: 420px; }
+    .indicator-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .indicator-chart { height: 210px; }
+    .score {
+      display: grid;
+      grid-template-columns: 104px minmax(0, 1fr);
+      gap: 14px;
+      align-items: center;
+    }
+    .score-ring {
+      width: 104px;
+      height: 104px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: conic-gradient(var(--score-color) calc(var(--score) * 1%), #e7eeee 0);
+      position: relative;
+    }
+    .score-ring::before {
+      content: "";
+      position: absolute;
+      width: 76px;
+      height: 76px;
+      border-radius: 50%;
+      background: #fff;
+      border: 1px solid var(--line);
+    }
+    .score-ring strong { position: relative; font-size: 24px; }
+    .score h3 { margin: 0; font-size: 17px; }
+    .score p { margin: 6px 0 0; color: var(--muted); }
+    .list, .orderbook {
+      display: grid;
+      gap: 9px;
+      margin: 12px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+    .list li {
+      padding: 9px 0;
+      border-top: 1px solid var(--line);
+    }
+    .list li:first-child { border-top: 0; padding-top: 0; }
+    .hint { display: block; color: var(--muted); font-size: 12px; }
+    .alert-row {
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr);
+      gap: 9px;
+      align-items: start;
+    }
+    .field-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .field label {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 5px;
+    }
+    .field input, .field select {
+      width: 100%;
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 8px 10px;
+      color: var(--ink);
+      background: #fff;
+      outline-color: rgba(11, 143, 134, 0.35);
+    }
+    .forecast {
+      margin-top: 10px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--soft);
+      padding: 12px;
+    }
+    .forecast strong {
+      display: block;
+      font-size: 19px;
+      line-height: 1.2;
+      margin-bottom: 5px;
+    }
+    .mini-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      font-size: 12px;
+    }
+    .mini-table th, .mini-table td {
+      padding: 8px 6px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+    .mini-table th { color: var(--muted); font-weight: 500; }
+    .orderbook li {
+      display: grid;
+      grid-template-columns: 86px minmax(0, 1fr) 58px;
+      gap: 8px;
+      align-items: center;
+      font-size: 12px;
+    }
+    .bar-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 54px;
+      gap: 8px;
+      align-items: center;
+      color: var(--muted);
+    }
+    .bar-track {
+      height: 9px;
+      border-radius: 999px;
+      background: #e5eeee;
+      overflow: hidden;
+    }
+    .bar-fill {
+      display: block;
+      height: 100%;
+      width: var(--w);
+      background: var(--c);
+      border-radius: 999px;
+    }
+    .bottom-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+      gap: 16px;
+      margin-top: 16px;
+    }
+    .strategy-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .strategy-item {
+      min-height: 132px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 12px;
+      background: #fff;
+    }
+    .strategy-item h3 { margin: 0 0 8px; font-size: 14px; }
+    .strategy-item p { margin: 0; color: var(--muted); font-size: 13px; }
+    .note {
+      margin-top: 12px;
+      padding: 10px 12px;
+      border-left: 3px solid var(--teal);
+      border-radius: var(--radius);
+      background: var(--soft);
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 1340px) {
+      .workspace { grid-template-columns: 270px minmax(0, 1fr); }
+      .right-rail {
+        grid-column: 1 / -1;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        position: static;
+      }
+    }
+    @media (max-width: 1040px) {
+      .workspace, .bottom-grid { grid-template-columns: 1fr; }
+      .sidebar, .right-rail { position: static; }
+      .sidebar { grid-template-columns: 1fr 1fr; }
+      .right-rail { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 760px) {
+      .app { width: min(100% - 18px, 1680px); padding-top: 9px; }
+      .topbar, .skin-head { align-items: flex-start; }
+      .topbar, .skin-head, .sidebar, .metrics,
+      .indicator-grid, .strategy-grid { grid-template-columns: 1fr; }
+      .topbar { display: grid; }
+      .brand h1, .brand p { white-space: normal; }
+      .skin-actions { justify-content: flex-start; }
+      .field-grid { grid-template-columns: 1fr; }
+      #priceChart { height: 360px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">CS</div>
+        <div>
+          <h1>CS2 饰品交易监控台</h1>
+          <p>建仓预计、跑路预警、7 天冷却期风险、KDJ 与 MACD 联动监控</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <span class="status"><span class="dot"></span><span id="syncStatus">Demo 行情已载入</span></span>
+        <button class="button ghost" id="syncButton" type="button">尝试同步 CSQAQ 指数</button>
+        <button class="button" id="refreshButton" type="button">刷新预警</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <aside class="sidebar">
+        <section class="panel">
+          <div class="panel-title"><h2>监控池</h2><span id="watchCount">4 件</span></div>
+          <label class="search-box" for="skinSearch">
+            <span>搜索</span>
+            <input id="skinSearch" type="search" placeholder="输入饰品名、平台或标签">
+          </label>
+          <div class="watchlist" id="watchlist"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title"><h2>数据源状态</h2><span id="sourceLatency">本地样本</span></div>
+          <ul class="list">
+            <li><strong>悠悠有品 / 网易 BUFF</strong><span class="hint">价格、求购、成交量、在售数量按平台拆分计算。</span></li>
+            <li><strong>CSQAQ 开放 API</strong><span class="hint">首页指数可直连；单件图表、库存监控、持仓排行建议由后端携带 ApiToken 请求。</span></li>
+            <li><strong>凭证处理</strong><span class="hint">账号密码不写入前端。生产环境只保存在服务端密钥仓库。</span></li>
+          </ul>
+          <div class="note" id="marketNote">当前页面使用内置样本数据，可直接演示预警逻辑。</div>
+        </section>
+      </aside>
+
+      <section class="main-panel" aria-live="polite">
+        <div class="skin-head">
+          <img class="skin-art" id="skinImage" alt="">
+          <div class="skin-copy">
+            <h2 id="skinName">加载中</h2>
+            <p id="skinMeta">正在计算行情模型</p>
+          </div>
+          <div class="skin-actions">
+            <span class="pill" id="marketPair">BUFF / 悠悠</span>
+            <span class="pill" id="lockHint">T+7 冷却</span>
+            <button class="button danger" id="panicButton" type="button">只看跑路风险</button>
+          </div>
+        </div>
+
+        <div class="metrics" id="metrics"></div>
+
+        <div class="chart-toolbar">
+          <div class="segmented" aria-label="图表周期">
+            <button type="button" data-range="30">30 日</button>
+            <button type="button" data-range="60" class="active">60 日</button>
+            <button type="button" data-range="90">90 日</button>
+          </div>
+          <div class="legend">
+            <span><i style="background:#0b8f86"></i>BUFF 售价</span>
+            <span><i style="background:#2b8fb8"></i>悠悠有品售价</span>
+            <span><i style="background:#c79b1f"></i>MA7</span>
+            <span><i style="background:#d64f4f"></i>成交量异动</span>
+          </div>
+        </div>
+
+        <div class="chart-box"><div id="priceChart"></div></div>
+        <div class="indicator-grid">
+          <div class="chart-box">
+            <div class="section-title"><h2>MACD</h2><p id="macdSummary">DIF/DEA</p></div>
+            <div class="indicator-chart" id="macdChart"></div>
+          </div>
+          <div class="chart-box">
+            <div class="section-title"><h2>KDJ</h2><p id="kdjSummary">K/D/J</p></div>
+            <div class="indicator-chart" id="kdjChart"></div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="right-rail">
+        <section class="panel">
+          <div class="panel-title"><h2>跑路预警</h2><span id="riskUpdated">刚刚</span></div>
+          <div class="score">
+            <div class="score-ring" id="riskRing" style="--score:0;--score-color:#1f9d66"><strong id="riskScore">0</strong></div>
+            <div><h3 id="riskTitle">风险计算中</h3><p id="riskText">等待行情数据。</p></div>
+          </div>
+          <ul class="list" id="riskReasons"></ul>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title"><h2>建仓预计</h2><span id="entryBadge">观察</span></div>
+          <div class="score">
+            <div class="score-ring" id="entryRing" style="--score:0;--score-color:#0b8f86"><strong id="entryScore">0</strong></div>
+            <div><h3 id="entryTitle">建仓窗口计算中</h3><p id="entryText">结合量价、价差、持仓和 T+7 可卖出窗口。</p></div>
+          </div>
+          <ul class="list" id="entryReasons"></ul>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title"><h2>7 天冷却试算</h2><span id="sellableDate">T+7</span></div>
+          <div class="field-grid">
+            <div class="field"><label for="qtyInput">买入数量</label><input id="qtyInput" type="number" min="1" max="999" value="8"></div>
+            <div class="field"><label for="feeInput">卖出费率</label><select id="feeInput"><option value="0.025">2.5%</option><option value="0.020">2.0%</option><option value="0.015">1.5%</option></select></div>
+          </div>
+          <div class="forecast" id="forecastResult"><strong>等待计算</strong><span class="hint">输入仓位后自动生成 T+7 价格带。</span></div>
+        </section>
+      </aside>
+    </main>
+
+    <section class="bottom-grid">
+      <div class="wide-panel">
+        <div class="section-title"><h2>实时预警流</h2><p>成交量、挂单厚度、顶级持仓变化和技术指标同时触发。</p></div>
+        <ul class="list" id="alertList"></ul>
+      </div>
+      <div class="wide-panel">
+        <div class="section-title"><h2>盘口厚度</h2><p id="bookSummary">盘口正在加载。</p></div>
+        <ul class="orderbook" id="orderbook"></ul>
+      </div>
+    </section>
+
+    <section class="bottom-grid">
+      <div class="wide-panel">
+        <div class="section-title"><h2>策略触发器</h2><p>用于 demo 验收的三类规则，生产版可做成可配置规则引擎。</p></div>
+        <div class="strategy-grid">
+          <article class="strategy-item"><h3>规模建仓</h3><p>连续 3 日成交量大于 20 日均量 1.6 倍，价格没有同步拉高，Top10 持仓净增超过 4%。</p></article>
+          <article class="strategy-item"><h3>跑路预警</h3><p>7 日跌幅扩大、在售数量增加、Top10 持仓下降、MACD 死叉，同时悠悠与 BUFF 价差扩大。</p></article>
+          <article class="strategy-item"><h3>冷却期保护</h3><p>买入后 T+7 才能交易，预警模型会把未来 7 天的解锁库存和价格波动计入风险分。</p></article>
+        </div>
+      </div>
+      <div class="wide-panel">
+        <div class="section-title"><h2>后端接入清单</h2><p>真实行情只需要替换数据适配器。</p></div>
+        <table class="mini-table">
+          <thead><tr><th>数据</th><th>接口/来源</th><th>用途</th></tr></thead>
+          <tbody>
+            <tr><td>大盘指数</td><td>CSQAQ current_data</td><td>市场温度、板块风向</td></tr>
+            <tr><td>单件图表</td><td>CSQAQ info/chart</td><td>BUFF、悠悠、Steam 多周期价格与数量</td></tr>
+            <tr><td>库存监控</td><td>CSQAQ monitor/rank</td><td>团队建仓、顶级持仓变化、集中度</td></tr>
+            <tr><td>盘口成交</td><td>授权 API 或服务端采集</td><td>挂单墙、扫货、砸盘、价差套利</td></tr>
+          </tbody>
+        </table>
+        <div class="note">预测结果只做监控与风控辅助，不构成买卖建议。</div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const fallbackImage = "data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 160 110'%3E%3Crect width='160' height='110' rx='8' fill='%23eef6f5'/%3E%3Cpath d='M24 72h112v12H24zM38 48h84v12H38zM54 26h52v12H54z' fill='%230b8f86'/%3E%3Ccircle cx='121' cy='32' r='10' fill='%23d64f4f'/%3E%3C/svg%3E";
+    const baseDate = new Date("2026-04-16T00:00:00+08:00");
+    const state = {
+      activeId: "ak-fire",
+      range: 60,
+      panicOnly: false,
+      data: {},
+      charts: {}
+    };
+
+    const items = [
+      {
+        id: "ak-fire",
+        name: "AK-47 | 火蛇",
+        wear: "略有磨损",
+        tags: ["红皮", "主战", "建仓观察"],
+        base: 5980,
+        seed: 12,
+        scenario: "accumulation",
+        float: "0.18 - 0.22",
+        supply: 1262,
+        image: "https://g.fp.ps.netease.com/market/file/5f2cdf9b2786fdc5d7c9fedflDzy6QJ402"
+      },
+      {
+        id: "m4-printstream",
+        name: "M4A1-S | 印花集",
+        wear: "崭新出厂",
+        tags: ["主战", "跑路高危", "价差扩大"],
+        base: 2180,
+        seed: 33,
+        scenario: "exit",
+        float: "0.02 - 0.07",
+        supply: 4890,
+        image: "https://g.fp.ps.netease.com/market/file/61ea279430422a876473f284dqidhit104"
+      },
+      {
+        id: "butterfly-doppler",
+        name: "蝴蝶刀 | 多普勒 P2",
+        wear: "崭新出厂",
+        tags: ["匕首", "趋势健康", "高流动性"],
+        base: 12600,
+        seed: 72,
+        scenario: "trend",
+        float: "0.01 - 0.04",
+        supply: 618,
+        image: "https://market.fp.ps.netease.com/file/6613bbf642e0b836ebd706e9wDi9ZHFv05"
+      },
+      {
+        id: "sport-gloves",
+        name: "运动手套 | 迈阿密风云",
+        wear: "久经沙场",
+        tags: ["手套", "背离观察", "锁仓压力"],
+        base: 3650,
+        seed: 108,
+        scenario: "distribution",
+        float: "0.32 - 0.38",
+        supply: 932,
+        image: "https://g.fp.ps.netease.com/market/file/5ef4ce0a7f9d2adfd304ee17mI03ZI1i02"
+      }
+    ];
+
+    const $ = id => document.getElementById(id);
+    const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+    const avg = list => list.length
+      ? list.reduce((sum, value) => sum + value, 0) / list.length
+      : 0;
+    const money = value => "¥" + Math.round(value).toLocaleString("zh-CN");
+    const compact = value => Math.round(value).toLocaleString("zh-CN");
+    const pct = (value, signed = true) => {
+      const sign = signed && value > 0 ? "+" : "";
+      return `${sign}${Math.round(value * 100) / 100}%`;
+    };
+    const change = (now, before) => before ? (now - before) / before * 100 : 0;
+    const labelDate = date => `${date.getMonth() + 1}/${date.getDate()}`;
+    const isoDate = date => {
+      const m = String(date.getMonth() + 1).padStart(2, "0");
+      const d = String(date.getDate()).padStart(2, "0");
+      return `${date.getFullYear()}-${m}-${d}`;
+    };
+    const addDays = (date, days) => {
+      const next = new Date(date);
+      next.setDate(next.getDate() + days);
+      return next;
+    };
+    const randomSeed = seed => () => {
+      let t = seed += 0x6D2B79F5;
+      t = Math.imul(t ^ t >>> 15, t | 1);
+      t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+
+    function makeSeries(item) {
+      const random = randomSeed(item.seed);
+      const rows = [];
+      let buff = item.base;
+      let holders = Math.max(80, item.supply * 0.18);
+      let listings = Math.max(35, item.supply * 0.11);
+      let orders = Math.max(24, item.supply * 0.07);
+
+      for (let i = 0; i < 92; i += 1) {
+        const progress = i / 91;
+        let drift = 0.0005
+          + Math.sin(i / 5.7) * 0.006
+          + Math.cos(i / 9.4) * 0.004
+          + (random() - 0.5) * 0.018;
+        let vol = item.supply * (0.017 + random() * 0.012);
+        let hDelta = (random() - 0.45) * 1.2;
+        let lDelta = (random() - 0.5) * 2.2;
+        let oDelta = (random() - 0.42) * 2;
+        let spread = 0.006 + (random() - 0.5) * 0.009;
+
+        if (item.scenario === "accumulation" && i > 55) {
+          drift += 0.0024 - Math.max(0, progress - 0.78) * 0.003;
+          vol *= 1.45 + (i > 72 ? 0.55 : 0);
+          hDelta += i > 68 ? 2.8 : 1.5;
+          lDelta -= i > 70 ? 2.2 : 0.9;
+          oDelta += 2.4;
+          spread *= 0.7;
+        }
+        if (item.scenario === "exit" && i > 56) {
+          drift -= 0.0045 + Math.max(0, progress - 0.70) * 0.017;
+          vol *= i > 72 ? 2.55 : 1.8;
+          hDelta -= i > 68 ? 4.4 : 2.2;
+          lDelta += i > 68 ? 6.5 : 2.8;
+          oDelta -= 2.1;
+          spread += i > 70 ? 0.022 : 0.012;
+        }
+        if (item.scenario === "exit" && i > 84) {
+          drift -= 0.012;
+          vol *= 1.55;
+        }
+        if (item.scenario === "trend") {
+          drift += 0.0015 + Math.sin(i / 13) * 0.003;
+          vol *= 1.08;
+          hDelta += i > 60 ? 0.65 : 0.1;
+          oDelta += 0.8;
+          spread *= 0.62;
+        }
+        if (item.scenario === "distribution" && i > 48) {
+          drift += i < 72 ? 0.002 : -0.0065;
+          vol *= i > 66 ? 1.9 : 1.2;
+          hDelta -= i > 68 ? 2.6 : 0.8;
+          lDelta += i > 68 ? 4.2 : 1.2;
+          spread += i > 73 ? 0.015 : 0.006;
+        }
+
+        buff = Math.max(item.base * 0.52, buff * (1 + drift));
+        const youpin = Math.max(item.base * 0.50, buff * (1 + spread));
+        const close = (buff + youpin) / 2;
+        holders = Math.max(12, holders + hDelta);
+        listings = Math.max(8, listings + lDelta);
+        orders = Math.max(4, orders + oDelta);
+        rows.push({
+          date: addDays(baseDate, i - 91),
+          buff,
+          youpin,
+          close,
+          high: close * (1.008 + random() * 0.018),
+          low: close * (0.992 - random() * 0.018),
+          volume: Math.max(6, Math.round(vol)),
+          holders,
+          listings: Math.round(listings),
+          orders: Math.round(orders),
+          spread: (youpin - buff) / buff * 100
+        });
+      }
+      return rows;
+    }
+
+    function ma(values, period) {
+      return values.map((_, index) => {
+        const start = Math.max(0, index - period + 1);
+        return avg(values.slice(start, index + 1));
+      });
+    }
+
+    function ema(values, period) {
+      const k = 2 / (period + 1);
+      return values.reduce((out, value, index) => {
+        out.push(index ? value * k + out[index - 1] * (1 - k) : value);
+        return out;
+      }, []);
+    }
+
+    function macd(values) {
+      const e12 = ema(values, 12);
+      const e26 = ema(values, 26);
+      const dif = values.map((_, index) => e12[index] - e26[index]);
+      const dea = ema(dif, 9);
+      return {
+        dif,
+        dea,
+        hist: dif.map((value, index) => (value - dea[index]) * 2)
+      };
+    }
+
+    function kdj(rows) {
+      const k = [];
+      const d = [];
+      const j = [];
+      let lastK = 50;
+      let lastD = 50;
+      rows.forEach((row, index) => {
+        const slice = rows.slice(Math.max(0, index - 8), index + 1);
+        const low = Math.min(...slice.map(item => item.low));
+        const high = Math.max(...slice.map(item => item.high));
+        const rsv = high === low ? 50 : (row.close - low) / (high - low) * 100;
+        lastK = lastK * 2 / 3 + rsv / 3;
+        lastD = lastD * 2 / 3 + lastK / 3;
+        k.push(clamp(lastK, 0, 100));
+        d.push(clamp(lastD, 0, 100));
+        j.push(clamp(3 * lastK - 2 * lastD, 0, 120));
+      });
+      return { k, d, j };
+    }
+
+    function getItem(id = state.activeId) {
+      return items.find(item => item.id === id) || items[0];
+    }
+
+    function getRows(id = state.activeId) {
+      return state.data[id] || [];
+    }
+
+    function visible(rows) {
+      return rows.slice(-state.range);
+    }
+
+    function analyze(id = state.activeId) {
+      const item = getItem(id);
+      const rows = getRows(id);
+      const closes = rows.map(row => row.close);
+      const vols = rows.map(row => row.volume);
+      const last = rows.at(-1);
+      const prev = rows.at(-2);
+      const p7 = rows.at(-8);
+      const p30 = rows.at(-31);
+      const vol20 = avg(vols.slice(-23, -3));
+      const vol3 = avg(vols.slice(-3));
+      const volumeSpike = vol20 ? vol3 / vol20 : 1;
+      const holder7 = change(last.holders, p7.holders);
+      const listing7 = change(last.listings, p7.listings);
+      const order7 = change(last.orders, p7.orders);
+      const drop7 = change(last.close, p7.close);
+      const trend30 = change(last.close, p30.close);
+      const ma7 = ma(closes, 7);
+      const ma20 = ma(closes, 20);
+      const m = macd(closes);
+      const k = kdj(rows);
+      const index = rows.length - 1;
+      const macdDeath = m.dif[index - 1] > m.dea[index - 1]
+        && m.dif[index] < m.dea[index];
+      const macdGold = m.dif[index - 1] < m.dea[index - 1]
+        && m.dif[index] > m.dea[index];
+      const kdjDeath = k.k[index - 1] > k.d[index - 1]
+        && k.k[index] < k.d[index];
+      const kdjGold = k.k[index - 1] < k.d[index - 1]
+        && k.k[index] > k.d[index];
+      const belowMa = last.close < ma7[index] && ma7[index] < ma20[index];
+
+      let risk = 18;
+      risk += clamp(-drop7 * 4.6, 0, 34);
+      risk += clamp((volumeSpike - 1) * 18, 0, 22);
+      risk += clamp(-holder7 * 3.2, 0, 24);
+      risk += clamp(listing7 * 1.15, 0, 18);
+      risk += Math.abs(last.spread) > 1.8 ? 8 : Math.abs(last.spread) > 1 ? 4 : 0;
+      risk += macdDeath ? 8 : 0;
+      risk += kdjDeath ? 5 : 0;
+      risk += belowMa ? 8 : 0;
+      risk += item.scenario === "exit" ? 8 : item.scenario === "distribution" ? 5 : 0;
+      risk = Math.round(clamp(risk, 4, 98));
+
+      let entry = 16;
+      entry += clamp(holder7 * 4.2, 0, 28);
+      entry += clamp((volumeSpike - 1) * 13, 0, 18);
+      entry += drop7 > -2 && drop7 < 4 ? 12 : 0;
+      entry += macdGold ? 7 : 0;
+      entry += kdjGold || k.k[index] < 35 ? 7 : 0;
+      entry += order7 > 4 ? 8 : 0;
+      entry -= risk > 68 ? 18 : risk > 52 ? 8 : 0;
+      entry += item.scenario === "accumulation" ? 12 : item.scenario === "trend" ? 7 : 0;
+      entry = Math.round(clamp(entry, 5, 95));
+
+      const unlock = clamp(
+        (listing7 + Math.max(0, -holder7) + Math.max(0, -drop7)) / 3,
+        0,
+        32
+      );
+      const move = clamp(
+        trend30 * 0.16 + holder7 * 0.22 - listing7 * 0.10 - (risk - 50) * 0.055,
+        -10,
+        9
+      );
+      const mid = last.close * (1 + move / 100);
+      const width = last.close * (
+        0.035 + Math.max(0, risk - 45) / 1600 + Math.max(0, volumeSpike - 1) / 120
+      );
+
+      return {
+        item,
+        rows,
+        closes,
+        ma7,
+        ma20,
+        macd: m,
+        kdj: k,
+        last,
+        prev,
+        volumeSpike,
+        holder7,
+        listing7,
+        order7,
+        drop7,
+        trend30,
+        macdDeath,
+        macdGold,
+        kdjDeath,
+        kdjGold,
+        belowMa,
+        risk,
+        entry,
+        unlock,
+        forecast: {
+          low: Math.max(1, mid - width),
+          mid,
+          high: mid + width,
+          move
+        }
+      };
+    }
+
+    function riskClass(score) {
+      if (score >= 70) return "high";
+      if (score >= 45) return "mid";
+      return "low";
+    }
+
+    function riskText(score) {
+      if (score >= 70) return "高危";
+      if (score >= 45) return "中性";
+      return "稳健";
+    }
+
+    function scoreColor(score) {
+      if (score >= 70) return "#d64f4f";
+      if (score >= 45) return "#c79b1f";
+      return "#1f9d66";
+    }
+
+    function entryText(score) {
+      if (score >= 72) return "可建仓";
+      if (score >= 52) return "观察";
+      return "等待";
+    }
+
+    function initData() {
+      items.forEach(item => {
+        state.data[item.id] = makeSeries(item);
+      });
+    }
+
+    function initCharts() {
+      if (!window.echarts) {
+        $("priceChart").textContent = "图表库未加载，请检查网络后刷新。";
+        return;
+      }
+      state.charts.price = echarts.init($("priceChart"));
+      state.charts.macd = echarts.init($("macdChart"));
+      state.charts.kdj = echarts.init($("kdjChart"));
+      window.addEventListener("resize", () => {
+        Object.values(state.charts).forEach(chart => chart && chart.resize());
+      });
+    }
+
+    function renderWatchlist() {
+      const query = $("skinSearch").value.trim().toLowerCase();
+      const filtered = items.filter(item => {
+        const text = [item.name, item.wear, ...item.tags].join(" ").toLowerCase();
+        return !query || text.includes(query);
+      });
+      $("watchCount").textContent = `${filtered.length} 件`;
+      $("watchlist").innerHTML = filtered.map(item => {
+        const result = analyze(item.id);
+        const active = item.id === state.activeId ? "active" : "";
+        return `
+          <button class="watch-item ${active}" data-id="${item.id}" type="button">
+            <img src="${item.image}" alt="${item.name}" onerror="this.src='${fallbackImage}'">
+            <span>
+              <span class="watch-name">${item.name}</span>
+              <span class="watch-meta">
+                ${item.wear} · ${money(result.last.close)} · ${pct(result.drop7)}
+              </span>
+            </span>
+            <span class="risk-tag ${riskClass(result.risk)}">${riskText(result.risk)}</span>
+          </button>
+        `;
+      }).join("") || `<div class="note">没有匹配的饰品。</div>`;
+
+      document.querySelectorAll(".watch-item").forEach(button => {
+        button.onclick = () => {
+          state.activeId = button.dataset.id;
+          state.panicOnly = false;
+          $("panicButton").textContent = "只看跑路风险";
+          renderAll();
+        };
+      });
+    }
+
+    function renderHeader(result) {
+      $("skinImage").src = result.item.image;
+      $("skinImage").alt = result.item.name;
+      $("skinImage").onerror = () => {
+        $("skinImage").src = fallbackImage;
+      };
+      $("skinName").textContent = result.item.name;
+      $("skinMeta").textContent = [
+        result.item.wear,
+        `存世样本 ${compact(result.item.supply)}`,
+        `磨损 ${result.item.float}`,
+        `30 日 ${pct(result.trend30)}`
+      ].join(" · ");
+      $("marketPair").textContent = "网易 BUFF / 悠悠有品";
+      $("lockHint").textContent = `买入后 ${isoDate(addDays(baseDate, 7))} 可交易`;
+      $("sellableDate").textContent = isoDate(addDays(baseDate, 7));
+
+      const metrics = [
+        ["当前均价", money(result.last.close), `较昨日 ${pct(change(result.last.close, result.prev.close))}`],
+        ["7 日涨跌", pct(result.drop7), `30 日 ${pct(result.trend30)}`],
+        ["成交量倍数", `${Math.round(result.volumeSpike * 100) / 100}x`, "近 3 日 / 20 日均量"],
+        ["平台价差", pct(result.last.spread), result.last.spread > 0 ? "悠悠高于 BUFF" : "BUFF 高于悠悠"]
+      ];
+      $("metrics").innerHTML = metrics.map(metric => {
+        const tone = metric[1].includes("-") ? "negative" : metric[1].includes("+") ? "positive" : "";
+        return `
+          <div class="metric">
+            <label>${metric[0]}</label>
+            <strong class="${tone}">${metric[1]}</strong>
+            <small>${metric[2]}</small>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function chartBase() {
+      return {
+        textStyle: {
+          fontFamily: "Microsoft YaHei, PingFang SC, Arial"
+        },
+        color: ["#0b8f86", "#2b8fb8", "#c79b1f", "#d64f4f"],
+        animationDuration: 350,
+        tooltip: {
+          trigger: "axis",
+          borderColor: "#b8cac8",
+          backgroundColor: "rgba(255,255,255,0.96)",
+          textStyle: { color: "#151a1f" }
+        }
+      };
+    }
+
+    function renderCharts(result) {
+      if (!state.charts.price) return;
+      const rows = visible(result.rows);
+      const start = result.rows.length - rows.length;
+      const labels = rows.map(row => labelDate(row.date));
+      const volumes = rows.map(row => row.volume);
+      const avgVol = avg(volumes);
+      const splitLine = { lineStyle: { color: "#e3eceb" } };
+
+      state.charts.price.setOption({
+        ...chartBase(),
+        grid: [
+          { left: 58, right: 18, top: 24, height: "58%" },
+          { left: 58, right: 18, top: "76%", height: "15%" }
+        ],
+        xAxis: [
+          {
+            type: "category",
+            data: labels,
+            boundaryGap: false,
+            axisLine: { lineStyle: { color: "#d7e3e2" } }
+          },
+          {
+            type: "category",
+            gridIndex: 1,
+            data: labels,
+            axisLabel: { show: false },
+            axisTick: { show: false },
+            axisLine: { show: false }
+          }
+        ],
+        yAxis: [
+          {
+            type: "value",
+            scale: true,
+            axisLabel: { formatter: value => "¥" + Math.round(value) },
+            splitLine
+          },
+          {
+            type: "value",
+            gridIndex: 1,
+            splitLine: { show: false },
+            axisLabel: { color: "#66757d" }
+          }
+        ],
+        dataZoom: [{ type: "inside", xAxisIndex: [0, 1] }],
+        series: [
+          {
+            name: "BUFF 售价",
+            type: "line",
+            smooth: true,
+            showSymbol: false,
+            data: rows.map(row => Math.round(row.buff)),
+            lineStyle: { width: 3 }
+          },
+          {
+            name: "悠悠有品售价",
+            type: "line",
+            smooth: true,
+            showSymbol: false,
+            data: rows.map(row => Math.round(row.youpin)),
+            lineStyle: { width: 2 }
+          },
+          {
+            name: "MA7",
+            type: "line",
+            smooth: true,
+            showSymbol: false,
+            data: result.ma7.slice(start).map(value => Math.round(value)),
+            lineStyle: { width: 2 }
+          },
+          {
+            name: "成交量",
+            type: "bar",
+            xAxisIndex: 1,
+            yAxisIndex: 1,
+            data: volumes.map(value => ({
+              value,
+              itemStyle: {
+                color: value > avgVol * 1.65
+                  ? "rgba(214,79,79,0.62)"
+                  : "rgba(11,143,134,0.28)"
+              }
+            }))
+          }
+        ]
+      }, true);
+
+      renderMacdChart(result, labels, start, splitLine);
+      renderKdjChart(result, labels, start, splitLine);
+    }
+
+    function renderMacdChart(result, labels, start, splitLine) {
+      const m = {
+        dif: result.macd.dif.slice(start),
+        dea: result.macd.dea.slice(start),
+        hist: result.macd.hist.slice(start)
+      };
+      state.charts.macd.setOption({
+        ...chartBase(),
+        grid: { left: 46, right: 12, top: 20, bottom: 28 },
+        xAxis: { type: "category", data: labels, axisLabel: { show: false } },
+        yAxis: { type: "value", splitLine },
+        series: [
+          {
+            name: "柱",
+            type: "bar",
+            data: m.hist.map(value => ({
+              value,
+              itemStyle: {
+                color: value >= 0
+                  ? "rgba(31,157,102,0.58)"
+                  : "rgba(214,79,79,0.58)"
+              }
+            }))
+          },
+          { name: "DIF", type: "line", showSymbol: false, data: m.dif },
+          { name: "DEA", type: "line", showSymbol: false, data: m.dea }
+        ]
+      }, true);
+      const last = result.rows.length - 1;
+      const status = result.macd.dif[last] > result.macd.dea[last] ? "多头" : "空头";
+      $("macdSummary").textContent = `${status} · DIF ${Math.round(result.macd.dif[last] * 10) / 10}`
+        + ` / DEA ${Math.round(result.macd.dea[last] * 10) / 10}`;
+    }
+
+    function renderKdjChart(result, labels, start, splitLine) {
+      const k = {
+        k: result.kdj.k.slice(start),
+        d: result.kdj.d.slice(start),
+        j: result.kdj.j.slice(start)
+      };
+      state.charts.kdj.setOption({
+        ...chartBase(),
+        grid: { left: 36, right: 12, top: 20, bottom: 28 },
+        xAxis: { type: "category", data: labels, axisLabel: { show: false } },
+        yAxis: { min: 0, max: 100, splitLine },
+        series: [
+          { name: "K", type: "line", showSymbol: false, data: k.k },
+          { name: "D", type: "line", showSymbol: false, data: k.d },
+          {
+            name: "J",
+            type: "line",
+            showSymbol: false,
+            data: k.j,
+            lineStyle: { color: "#d64f4f" }
+          }
+        ]
+      }, true);
+      const last = result.rows.length - 1;
+      const status = result.kdj.k[last] > result.kdj.d[last] ? "K>D" : "K<D";
+      $("kdjSummary").textContent = `${status} · K ${Math.round(result.kdj.k[last] * 10) / 10}`
+        + ` / D ${Math.round(result.kdj.d[last] * 10) / 10}`;
+    }
+
+    function renderScores(result) {
+      $("riskRing").style.setProperty("--score", result.risk);
+      $("riskRing").style.setProperty("--score-color", scoreColor(result.risk));
+      $("riskScore").textContent = result.risk;
+      $("riskTitle").textContent = result.risk >= 70
+        ? "疑似出货/跑路高危"
+        : result.risk >= 45 ? "存在资金分歧" : "风险暂稳";
+      $("riskText").textContent = result.risk >= 70
+        ? "建议降低仓位，等待挂单墙和持仓恢复。"
+        : result.risk >= 45 ? "继续盯成交量与 Top 持仓。" : "没有明显砸盘信号。";
+      $("riskUpdated").textContent = `${isoDate(baseDate)} 17:00`;
+
+      const riskReasons = [
+        [
+          "7 日价格变化",
+          pct(result.drop7),
+          result.drop7 < -3,
+          result.drop7 < -3 ? "短线下跌已进入砸盘观察区。" : "价格仍在可控波动范围。"
+        ],
+        [
+          "Top 持仓变化",
+          pct(result.holder7),
+          result.holder7 < -3,
+          result.holder7 < -3 ? "大户疑似减仓，需盯紧挂单墙。" : "持仓未出现集中出逃。"
+        ],
+        [
+          "成交量放大",
+          `${Math.round(result.volumeSpike * 100) / 100}x`,
+          result.volumeSpike > 1.8 && result.drop7 < 0,
+          result.volumeSpike > 1.8
+            ? "量能显著放大，结合价格方向判断资金意图。"
+            : "量能未突破异常阈值。"
+        ],
+        [
+          "技术指标",
+          result.macdDeath ? "MACD 死叉" : result.macdGold ? "MACD 金叉" : "震荡",
+          result.macdDeath,
+          result.belowMa ? "价格低于 MA7/MA20，趋势保护减弱。" : "均线结构尚未破坏。"
+        ]
+      ];
+      $("riskReasons").innerHTML = riskReasons.map(item => `
+        <li>
+          <strong class="${item[2] ? "negative" : "positive"}">${item[0]}：${item[1]}</strong>
+          <span class="hint">${item[3]}</span>
+        </li>
+      `).join("");
+
+      $("entryRing").style.setProperty("--score", result.entry);
+      $("entryRing").style.setProperty(
+        "--score-color",
+        result.entry >= 72 ? "#0b8f86" : result.entry >= 52 ? "#c79b1f" : "#d64f4f"
+      );
+      $("entryScore").textContent = result.entry;
+      $("entryTitle").textContent = entryText(result.entry);
+      $("entryBadge").textContent = entryText(result.entry);
+      $("entryText").textContent = result.entry >= 72
+        ? "量能与持仓同时改善，适合小仓试探。"
+        : result.entry >= 52 ? "等待价格确认或回踩。" : "资金面没有给出足够保护。";
+
+      const entryReasons = [
+        [
+          "建仓评分",
+          `${result.entry}/100`,
+          result.entry >= 72
+            ? "出现可跟踪建仓窗口。"
+            : result.entry >= 52 ? "适合观察，等待二次确认。" : "不适合追入。"
+        ],
+        ["挂单/求购变化", pct(result.order7), result.order7 > 4 ? "求购承接增强。" : "承接一般。"],
+        [
+          "7 天冷却暴露",
+          `${Math.round(result.unlock * 10) / 10}%`,
+          result.unlock > 16 ? "T+7 前价格带偏宽，仓位需要降低。" : "冷却期暴露可控。"
+        ]
+      ];
+      $("entryReasons").innerHTML = entryReasons.map(item => `
+        <li><strong>${item[0]}：${item[1]}</strong><span class="hint">${item[2]}</span></li>
+      `).join("");
+    }
+
+    function renderForecast(result) {
+      const qty = Math.max(1, Number($("qtyInput").value) || 1);
+      const fee = Number($("feeInput").value);
+      const capital = result.last.close * qty;
+      const lowExit = result.forecast.low * qty * (1 - fee);
+      const midExit = result.forecast.mid * qty * (1 - fee);
+      const maxLoss = change(lowExit, capital);
+      const safeEntry = result.forecast.low * (1 - fee) * 0.985;
+      $("forecastResult").innerHTML = `
+        <strong>${money(result.forecast.low)} - ${money(result.forecast.high)}</strong>
+        <span class="hint">
+          T+7 预测价带，中位 ${money(result.forecast.mid)}，预期变化 ${pct(result.forecast.move)}。
+        </span>
+        <table class="mini-table">
+          <tbody>
+            <tr><th>占用资金</th><td>${money(capital)}</td></tr>
+            <tr><th>T+7 中位回收</th><td>${money(midExit)}</td></tr>
+            <tr><th>压力价回撤</th><td class="${maxLoss < 0 ? "negative" : "positive"}">${pct(maxLoss)}</td></tr>
+            <tr><th>安全买入价</th><td>${money(safeEntry)}</td></tr>
+          </tbody>
+        </table>
+      `;
+    }
+
+    function renderAlerts() {
+      const alerts = items.flatMap(item => {
+        const result = analyze(item.id);
+        const rows = [];
+        if (result.risk >= 70) {
+          rows.push([
+            "高",
+            "high",
+            `${item.name} 跑路预警`,
+            `7 日 ${pct(result.drop7)}，Top 持仓 ${pct(result.holder7)}，`
+              + `成交量 ${Math.round(result.volumeSpike * 100) / 100}x。`
+          ]);
+        }
+        if (result.entry >= 72) {
+          rows.push([
+            "中",
+            "mid",
+            `${item.name} 建仓预计`,
+            `持仓净增 ${pct(result.holder7)}，盘口承接 ${pct(result.order7)}。`
+          ]);
+        }
+        if (result.unlock > 16) {
+          rows.push([
+            "中",
+            "mid",
+            `${item.name} 冷却期压力`,
+            `T+7 暴露 ${Math.round(result.unlock * 10) / 10}%，买入后无法立即止损。`
+          ]);
+        }
+        if (result.risk < 45 && result.entry < 60) {
+          rows.push([
+            "低",
+            "low",
+            `${item.name} 继续观察`,
+            `风险稳定，但建仓评分 ${result.entry}/100，等待量能确认。`
+          ]);
+        }
+        return rows;
+      }).filter(row => !state.panicOnly || row[2].includes("跑路"));
+
+      $("alertList").innerHTML = alerts.slice(0, 8).map(alert => `
+        <li>
+          <div class="alert-row">
+            <span class="alert-level ${alert[1]}">${alert[0]}</span>
+            <span><strong>${alert[2]}</strong><span class="hint">${alert[3]}</span></span>
+          </div>
+        </li>
+      `).join("") || `<li><span class="hint">当前没有满足条件的跑路信号。</span></li>`;
+    }
+
+    function renderOrderbook(result) {
+      const levels = [
+        ["BUFF 求购", result.last.orders, "#0b8f86", result.last.buff * 0.982],
+        ["悠悠求购", result.last.orders * 0.82, "#2b8fb8", result.last.youpin * 0.978],
+        ["BUFF 在售", result.last.listings, "#d64f4f", result.last.buff * 1.014],
+        ["悠悠在售", result.last.listings * 0.76, "#c79b1f", result.last.youpin * 1.017]
+      ];
+      const max = Math.max(...levels.map(item => item[1]));
+      $("bookSummary").textContent = `当前价差 ${pct(result.last.spread)}，`
+        + `在售 7 日变化 ${pct(result.listing7)}。`;
+      $("orderbook").innerHTML = levels.map(level => `
+        <li>
+          <strong>${level[0]}</strong>
+          <span class="bar-row">
+            <span class="bar-track">
+              <span class="bar-fill" style="--w:${Math.max(5, level[1] / max * 100)}%;--c:${level[2]}"></span>
+            </span>
+            <span>${compact(level[1])}</span>
+          </span>
+          <span>${money(level[3])}</span>
+        </li>
+      `).join("");
+    }
+
+    function renderAll() {
+      const result = analyze();
+      renderWatchlist();
+      renderHeader(result);
+      renderCharts(result);
+      renderScores(result);
+      renderForecast(result);
+      renderAlerts();
+      renderOrderbook(result);
+    }
+
+    async function syncMarket() {
+      $("syncStatus").textContent = "正在请求 CSQAQ 指数";
+      $("sourceLatency").textContent = "同步中";
+      const started = performance.now();
+      try {
+        const res = await fetch(
+          "https://api.csqaq.com/api/v1/current_data?type=init",
+          { mode: "cors" }
+        );
+        if (!res.ok) throw new Error(res.status);
+        const json = await res.json();
+        const index = json?.data?.sub_index_data?.[0];
+        if (!index) throw new Error("empty");
+        $("syncStatus").textContent = "CSQAQ 指数已同步";
+        $("sourceLatency").textContent = `${Math.round(performance.now() - started)} ms`;
+        $("marketNote").textContent = `CSQAQ 大盘指数 ${index.market_index}，`
+          + `涨跌 ${pct(index.chg_rate)}，更新时间 ${index.updated_at || "未知"}。`
+          + "单件行情仍使用 demo 数据。";
+      } catch (error) {
+        $("syncStatus").textContent = "Demo 行情已载入";
+        $("sourceLatency").textContent = "直连失败";
+        $("marketNote").textContent = "浏览器直连可能受 CORS 或网络限制。"
+          + "生产版建议通过后端代理请求 CSQAQ，并在后端携带 ApiToken。";
+      }
+    }
+
+    function bindEvents() {
+      $("skinSearch").addEventListener("input", renderWatchlist);
+      $("syncButton").addEventListener("click", syncMarket);
+      $("refreshButton").addEventListener("click", () => {
+        initData();
+        renderAll();
+        $("syncStatus").textContent = "预警已刷新";
+      });
+      $("panicButton").addEventListener("click", () => {
+        state.panicOnly = !state.panicOnly;
+        $("panicButton").textContent = state.panicOnly ? "查看全部预警" : "只看跑路风险";
+        renderAlerts();
+      });
+      document.querySelectorAll("[data-range]").forEach(button => {
+        button.addEventListener("click", () => {
+          document.querySelectorAll("[data-range]").forEach(item => {
+            item.classList.remove("active");
+          });
+          button.classList.add("active");
+          state.range = Number(button.dataset.range);
+          renderCharts(analyze());
+        });
+      });
+      $("qtyInput").addEventListener("input", () => renderForecast(analyze()));
+      $("feeInput").addEventListener("change", () => renderForecast(analyze()));
+    }
+
+    initData();
+    initCharts();
+    bindEvents();
+    renderAll();
+  </script>
+</body>
+</html>

@@ -1,0 +1,1544 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CS2饰品交易监控平台 - 建仓预警 & 跑路预警</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<style>
+/* ============ CSS Reset & Variables ============ */
+:root {
+  --bg-primary: #0a0e17;
+  --bg-secondary: #111827;
+  --bg-card: #1a2332;
+  --bg-card-hover: #1f2b3d;
+  --border-color: #2a3548;
+  --text-primary: #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --accent-blue: #3b82f6;
+  --accent-cyan: #06b6d4;
+  --accent-green: #10b981;
+  --accent-red: #ef4444;
+  --accent-orange: #f59e0b;
+  --accent-purple: #8b5cf6;
+  --up-color: #ef4444;
+  --down-color: #10b981;
+  --sidebar-width: 220px;
+  --header-height: 56px;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  overflow-x: hidden;
+  min-height: 100vh;
+}
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-secondary); }
+::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
+
+/* ============ Layout ============ */
+.app-container { display: flex; min-height: 100vh; }
+
+/* Sidebar */
+.sidebar {
+  width: var(--sidebar-width);
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border-color);
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+}
+.sidebar-logo {
+  height: var(--header-height);
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 20px;
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--accent-blue), var(--accent-cyan));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  letter-spacing: 1px;
+}
+.sidebar-logo span { font-size: 11px; color: var(--text-muted); -webkit-text-fill-color: var(--text-muted); margin-left: 6px; font-weight: 400; }
+.sidebar-nav { flex: 1; padding: 12px 0; overflow-y: auto; }
+.nav-section { padding: 8px 16px 4px; font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; }
+.nav-item {
+  display: flex;
+  align-items: center;
+  padding: 10px 20px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all .2s;
+  font-size: 14px;
+  border-left: 3px solid transparent;
+}
+.nav-item:hover { background: var(--bg-card); color: var(--text-primary); }
+.nav-item.active {
+  background: rgba(59,130,246,0.1);
+  color: var(--accent-blue);
+  border-left-color: var(--accent-blue);
+}
+.nav-item svg { width: 18px; height: 18px; margin-right: 10px; flex-shrink: 0; }
+.nav-badge {
+  margin-left: auto;
+  background: var(--accent-red);
+  color: #fff;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+
+/* Main Content */
+.main-content {
+  margin-left: var(--sidebar-width);
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+.header {
+  height: var(--header-height);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+.header-indices {
+  display: flex;
+  gap: 24px;
+  flex: 1;
+}
+.index-item { display: flex; align-items: center; gap: 8px; }
+.index-label { font-size: 12px; color: var(--text-muted); }
+.index-value { font-size: 14px; font-weight: 600; }
+.index-change { font-size: 12px; font-weight: 500; }
+.index-change.up { color: var(--up-color); }
+.index-change.down { color: var(--down-color); }
+.header-right { display: flex; align-items: center; gap: 16px; }
+.header-time { font-size: 12px; color: var(--text-muted); }
+
+/* Content Area */
+.content { flex: 1; padding: 16px 20px; overflow-y: auto; }
+
+/* Page sections */
+.page-section { display: none; }
+.page-section.active { display: block; }
+
+/* ============ Dashboard Page ============ */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.stat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 18px 20px;
+  transition: all .2s;
+}
+.stat-card:hover { border-color: var(--accent-blue); transform: translateY(-2px); }
+.stat-card-label { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+.stat-card-value { font-size: 24px; font-weight: 700; }
+.stat-card-change { font-size: 12px; margin-top: 4px; }
+.stat-card-change.up { color: var(--up-color); }
+.stat-card-change.down { color: var(--down-color); }
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+/* ============ Card ============ */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-color);
+}
+.card-title { font-size: 14px; font-weight: 600; }
+.card-body { padding: 16px 18px; }
+.card-actions { display: flex; gap: 8px; }
+.card-actions button {
+  background: none;
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  padding: 4px 10px;
+  border-radius: 5px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all .2s;
+}
+.card-actions button:hover,
+.card-actions button.active {
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+  color: #fff;
+}
+
+/* ============ Alert Table ============ */
+.alert-table { width: 100%; border-collapse: collapse; }
+.alert-table th {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+  font-weight: 500;
+}
+.alert-table td {
+  padding: 10px 12px;
+  font-size: 13px;
+  border-bottom: 1px solid rgba(42,53,72,0.5);
+}
+.alert-table tr:hover td { background: var(--bg-card-hover); }
+
+.alert-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.alert-tag.build { background: rgba(245,158,11,0.15); color: var(--accent-orange); }
+.alert-tag.dump { background: rgba(239,68,68,0.15); color: var(--accent-red); }
+.alert-tag.surge { background: rgba(16,185,129,0.15); color: var(--accent-green); }
+.alert-tag.drop { background: rgba(139,92,246,0.15); color: var(--accent-purple); }
+
+.risk-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.risk-badge.high { background: rgba(239,68,68,0.15); color: var(--accent-red); }
+.risk-badge.medium { background: rgba(245,158,11,0.15); color: var(--accent-orange); }
+.risk-badge.low { background: rgba(16,185,129,0.15); color: var(--accent-green); }
+
+.risk-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.risk-dot.high { background: var(--accent-red); animation: pulse 1.5s infinite; }
+.risk-dot.medium { background: var(--accent-orange); }
+.risk-dot.low { background: var(--accent-green); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ============ Watchlist ============ */
+.watchlist { display: flex; flex-direction: column; gap: 8px; }
+.watchlist-item {
+  display: grid;
+  grid-template-columns: 40px 1fr 100px 80px 80px 60px;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all .15s;
+  border: 1px solid transparent;
+}
+.watchlist-item:hover { border-color: var(--accent-blue); background: var(--bg-card-hover); }
+.watchlist-item.selected { border-color: var(--accent-blue); background: rgba(59,130,246,0.08); }
+.watchlist-img {
+  width: 40px;
+  height: 40px;
+  background: var(--bg-card);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+}
+.watchlist-name { font-size: 13px; font-weight: 500; }
+.watchlist-sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.watchlist-price { font-size: 14px; font-weight: 600; text-align: right; }
+.watchlist-change { font-size: 12px; text-align: right; font-weight: 500; }
+.watchlist-vol { font-size: 12px; color: var(--text-secondary); text-align: right; }
+.watchlist-alert { text-align: center; }
+
+/* ============ Analysis Page ============ */
+.analysis-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  padding: 14px 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+}
+.analysis-skin-info { display: flex; align-items: center; gap: 16px; }
+.analysis-skin-icon {
+  width: 56px;
+  height: 56px;
+  background: var(--bg-secondary);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+}
+.analysis-skin-name { font-size: 18px; font-weight: 700; }
+.analysis-skin-cat { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.analysis-prices { display: flex; gap: 32px; }
+.analysis-price-block { text-align: right; }
+.analysis-price-label { font-size: 11px; color: var(--text-muted); margin-bottom: 2px; }
+.analysis-price-val { font-size: 20px; font-weight: 700; }
+.analysis-price-chg { font-size: 12px; font-weight: 500; margin-top: 2px; }
+
+.chart-container {
+  width: 100%;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+.chart-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border-color);
+}
+.chart-toolbar-left { display: flex; gap: 6px; }
+.chart-toolbar button {
+  background: none;
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  padding: 4px 12px;
+  border-radius: 5px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all .2s;
+}
+.chart-toolbar button:hover,
+.chart-toolbar button.active {
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+  color: #fff;
+}
+.chart-box { width: 100%; }
+
+/* Analysis grid */
+.analysis-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.analysis-indicator {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.indicator-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border-color);
+}
+.indicator-title { font-size: 13px; font-weight: 600; }
+.indicator-signal {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+.indicator-signal.buy { background: rgba(16,185,129,0.15); color: var(--accent-green); }
+.indicator-signal.sell { background: rgba(239,68,68,0.15); color: var(--accent-red); }
+.indicator-signal.neutral { background: rgba(100,116,139,0.15); color: var(--text-secondary); }
+
+/* Prediction panel */
+.prediction-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 18px;
+  margin-bottom: 16px;
+}
+.prediction-title { font-size: 14px; font-weight: 600; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
+.prediction-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+}
+.prediction-item {
+  background: var(--bg-secondary);
+  padding: 14px;
+  border-radius: 8px;
+  text-align: center;
+}
+.prediction-label { font-size: 11px; color: var(--text-muted); margin-bottom: 6px; }
+.prediction-value { font-size: 18px; font-weight: 700; }
+.prediction-sub { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+
+/* ============ Alerts Page ============ */
+.alert-filters {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.alert-filter-btn {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all .2s;
+}
+.alert-filter-btn:hover,
+.alert-filter-btn.active {
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+  color: #fff;
+}
+
+/* Alert detail card */
+.alert-detail-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 18px;
+  margin-bottom: 12px;
+  border-left: 4px solid;
+  transition: all .2s;
+}
+.alert-detail-card:hover { transform: translateX(4px); }
+.alert-detail-card.type-build { border-left-color: var(--accent-orange); }
+.alert-detail-card.type-dump { border-left-color: var(--accent-red); }
+.alert-detail-card.type-surge { border-left-color: var(--accent-green); }
+.alert-detail-card.type-drop { border-left-color: var(--accent-purple); }
+.alert-detail-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.alert-detail-name { font-size: 15px; font-weight: 600; }
+.alert-detail-time { font-size: 12px; color: var(--text-muted); }
+.alert-detail-body { font-size: 13px; color: var(--text-secondary); line-height: 1.6; }
+.alert-detail-metrics {
+  display: flex;
+  gap: 20px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-color);
+}
+.alert-metric { text-align: center; }
+.alert-metric-label { font-size: 11px; color: var(--text-muted); }
+.alert-metric-value { font-size: 14px; font-weight: 600; margin-top: 2px; }
+
+/* ============ Search ============ */
+.search-box {
+  display: flex;
+  align-items: center;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 0 12px;
+  margin-bottom: 16px;
+}
+.search-box svg { width: 16px; height: 16px; color: var(--text-muted); flex-shrink: 0; }
+.search-box input {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  padding: 10px;
+  font-size: 13px;
+}
+.search-box input::placeholder { color: var(--text-muted); }
+
+/* ============ Misc ============ */
+.platform-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+}
+.platform-badge.buff { background: rgba(59,130,246,0.15); color: var(--accent-blue); }
+.platform-badge.youyou { background: rgba(139,92,246,0.15); color: var(--accent-purple); }
+
+.trend-sparkline { display: inline-block; vertical-align: middle; }
+
+.empty-state {
+  text-align: center;
+  padding: 40px;
+  color: var(--text-muted);
+}
+
+/* ============ Responsive ============ */
+@media (max-width: 1200px) {
+  .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .analysis-grid { grid-template-columns: 1fr; }
+  .prediction-grid { grid-template-columns: repeat(2, 1fr); }
+}
+</style>
+</head>
+<body>
+
+<div class="app-container">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">CS2Monitor <span>v1.0</span></div>
+    <nav class="sidebar-nav">
+      <div class="nav-section">总览</div>
+      <div class="nav-item active" onclick="switchPage('dashboard')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        市场面板
+      </div>
+      <div class="nav-section">监控</div>
+      <div class="nav-item" onclick="switchPage('watchlist')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        饰品监控
+      </div>
+      <div class="nav-item" onclick="switchPage('analysis')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        深度分析
+      </div>
+      <div class="nav-section">预警</div>
+      <div class="nav-item" onclick="switchPage('alerts')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        预警中心
+        <span class="nav-badge" id="alertBadge">5</span>
+      </div>
+      <div class="nav-item" onclick="switchPage('buildAlert')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M2 12h20"/><circle cx="12" cy="12" r="10"/></svg>
+        建仓预警
+        <span class="nav-badge" style="background:var(--accent-orange)">3</span>
+      </div>
+      <div class="nav-item" onclick="switchPage('dumpAlert')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        跑路预警
+        <span class="nav-badge" style="background:var(--accent-red)">2</span>
+      </div>
+      <div class="nav-section">工具</div>
+      <div class="nav-item" onclick="switchPage('compare')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+        平台比价
+      </div>
+    </nav>
+  </aside>
+
+  <!-- Main Content -->
+  <main class="main-content">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-indices">
+        <div class="index-item">
+          <span class="index-label">BUFF指数</span>
+          <span class="index-value">12,847</span>
+          <span class="index-change up">+1.24%</span>
+        </div>
+        <div class="index-item">
+          <span class="index-label">悠悠指数</span>
+          <span class="index-value">11,523</span>
+          <span class="index-change down">-0.87%</span>
+        </div>
+        <div class="index-item">
+          <span class="index-label">刀具板块</span>
+          <span class="index-value">8,391</span>
+          <span class="index-change up">+2.15%</span>
+        </div>
+        <div class="index-item">
+          <span class="index-label">手套板块</span>
+          <span class="index-value">6,204</span>
+          <span class="index-change down">-0.32%</span>
+        </div>
+      </div>
+      <div class="header-right">
+        <span class="header-time" id="headerTime"></span>
+      </div>
+    </header>
+
+    <div class="content">
+      <!-- ============ Dashboard Page ============ -->
+      <div class="page-section active" id="page-dashboard">
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-card-label">监控饰品数</div>
+            <div class="stat-card-value">1,247</div>
+            <div class="stat-card-change up">+23 今日新增</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-label">活跃预警</div>
+            <div class="stat-card-value" style="color:var(--accent-orange)">5</div>
+            <div class="stat-card-change" style="color:var(--accent-red)">2个高风险</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-label">24h成交额(悠悠)</div>
+            <div class="stat-card-value">¥3.2M</div>
+            <div class="stat-card-change up">+12.4%</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-label">24h成交额(BUFF)</div>
+            <div class="stat-card-value">¥5.8M</div>
+            <div class="stat-card-change down">-3.1%</div>
+          </div>
+        </div>
+
+        <div class="dashboard-grid">
+          <!-- Market trend chart -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">市场大盘走势</span>
+              <div class="card-actions">
+                <button class="active" onclick="updateMarketChart('7d')">7天</button>
+                <button onclick="updateMarketChart('30d')">30天</button>
+                <button onclick="updateMarketChart('90d')">90天</button>
+              </div>
+            </div>
+            <div class="card-body" style="padding:8px;">
+              <div id="marketTrendChart" style="height:280px;"></div>
+            </div>
+          </div>
+          <!-- Recent alerts -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">最新预警</span>
+              <div class="card-actions">
+                <button onclick="switchPage('alerts')">查看全部</button>
+              </div>
+            </div>
+            <div class="card-body" style="padding:0;">
+              <table class="alert-table">
+                <thead>
+                  <tr><th>饰品</th><th>类型</th><th>风险</th><th>时间</th></tr>
+                </thead>
+                <tbody id="dashAlertTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="dashboard-grid">
+          <!-- Volume ranking -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">成交量异动 Top5</span>
+              <div class="card-actions">
+                <button class="active">悠悠有品</button>
+                <button>BUFF</button>
+              </div>
+            </div>
+            <div class="card-body" style="padding:8px;">
+              <div id="volumeRankChart" style="height:240px;"></div>
+            </div>
+          </div>
+          <!-- Big merchant movements -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">大商持仓异动</span>
+              <div class="card-actions">
+                <button class="active">加仓Top5</button>
+                <button>减仓Top5</button>
+              </div>
+            </div>
+            <div class="card-body" style="padding:0;">
+              <table class="alert-table">
+                <thead>
+                  <tr><th>饰品</th><th>大商</th><th>变动</th><th>当前持仓</th></tr>
+                </thead>
+                <tbody id="merchantTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ Watchlist Page ============ -->
+      <div class="page-section" id="page-watchlist">
+        <div class="search-box">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="searchInput" placeholder="搜索饰品名称... (如: AK-47 火蛇, M4A4 龙王)" oninput="filterWatchlist()">
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">监控列表 <span style="color:var(--text-muted);font-weight:400;font-size:12px">(点击饰品进入深度分析)</span></span>
+            <div class="card-actions">
+              <button class="active" onclick="sortWatchlist('name')">名称</button>
+              <button onclick="sortWatchlist('price')">价格</button>
+              <button onclick="sortWatchlist('change')">涨跌</button>
+              <button onclick="sortWatchlist('volume')">成交量</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="watchlist" id="watchlistContainer"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ Analysis Page ============ -->
+      <div class="page-section" id="page-analysis">
+        <div class="analysis-top" id="analysisHeader"></div>
+
+        <!-- K-line + Volume main chart -->
+        <div class="chart-container">
+          <div class="chart-toolbar">
+            <div class="chart-toolbar-left">
+              <button onclick="changeKlinePeriod('1h')">1小时</button>
+              <button class="active" onclick="changeKlinePeriod('4h')">4小时</button>
+              <button onclick="changeKlinePeriod('1d')">日K</button>
+              <button onclick="changeKlinePeriod('1w')">周K</button>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <span class="platform-badge buff">BUFF</span>
+              <span class="platform-badge youyou">悠悠有品</span>
+            </div>
+          </div>
+          <div class="chart-box" id="klineChart" style="height:420px;"></div>
+        </div>
+
+        <!-- KDJ + MACD side by side -->
+        <div class="analysis-grid">
+          <div class="analysis-indicator">
+            <div class="indicator-header">
+              <span class="indicator-title">KDJ 指标</span>
+              <span class="indicator-signal" id="kdjSignal">--</span>
+            </div>
+            <div id="kdjChart" style="height:220px;"></div>
+          </div>
+          <div class="analysis-indicator">
+            <div class="indicator-header">
+              <span class="indicator-title">MACD 指标</span>
+              <span class="indicator-signal" id="macdSignal">--</span>
+            </div>
+            <div id="macdChart" style="height:220px;"></div>
+          </div>
+        </div>
+
+        <!-- Prediction panel -->
+        <div class="prediction-panel">
+          <div class="prediction-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-cyan)" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            价格预测 (基于技术指标综合分析)
+          </div>
+          <div class="prediction-grid" id="predictionGrid"></div>
+        </div>
+
+        <!-- Platform comparison -->
+        <div class="analysis-grid">
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">悠悠有品 在售结构</span>
+            </div>
+            <div id="youyouStructChart" style="height:220px;"></div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">BUFF 在售结构</span>
+            </div>
+            <div id="buffStructChart" style="height:220px;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ Alerts Page ============ -->
+      <div class="page-section" id="page-alerts">
+        <div class="alert-filters">
+          <button class="alert-filter-btn active" onclick="filterAlerts('all',this)">全部预警</button>
+          <button class="alert-filter-btn" onclick="filterAlerts('build',this)">建仓预警</button>
+          <button class="alert-filter-btn" onclick="filterAlerts('dump',this)">跑路预警</button>
+          <button class="alert-filter-btn" onclick="filterAlerts('surge',this)">放量上涨</button>
+          <button class="alert-filter-btn" onclick="filterAlerts('drop',this)">异常下跌</button>
+        </div>
+        <div id="alertsContainer"></div>
+      </div>
+
+      <!-- ============ Build Alert Page ============ -->
+      <div class="page-section" id="page-buildAlert">
+        <div class="card" style="margin-bottom:16px;">
+          <div class="card-header">
+            <span class="card-title" style="color:var(--accent-orange)">建仓预警监控</span>
+            <span style="font-size:12px;color:var(--text-muted)">检测疑似团队/大商规模建仓行为</span>
+          </div>
+          <div class="card-body">
+            <div style="font-size:13px;color:var(--text-secondary);line-height:1.8;margin-bottom:16px;">
+              <strong>监控逻辑：</strong>当某饰品在短时间内出现以下特征时触发预警：<br>
+              1. 成交量突增超过近7日均量的 <b style="color:var(--accent-orange)">300%</b> 以上<br>
+              2. 价格呈阶梯式上涨，且买入深度持续加大<br>
+              3. 悠悠有品/BUFF在售数量持续减少，挂单被快速扫货<br>
+              4. 大商账号出现集中买入行为
+            </div>
+          </div>
+        </div>
+        <div id="buildAlertContainer"></div>
+      </div>
+
+      <!-- ============ Dump Alert Page ============ -->
+      <div class="page-section" id="page-dumpAlert">
+        <div class="card" style="margin-bottom:16px;">
+          <div class="card-header">
+            <span class="card-title" style="color:var(--accent-red)">跑路预警监控</span>
+            <span style="font-size:12px;color:var(--text-muted)">检测疑似持仓团队大规模出货/跑路行为</span>
+          </div>
+          <div class="card-body">
+            <div style="font-size:13px;color:var(--text-secondary);line-height:1.8;margin-bottom:16px;">
+              <strong>监控逻辑：</strong>当某饰品出现以下特征时触发跑路预警：<br>
+              1. 大商账号在7天交易冷却期结束后集中挂售<br>
+              2. 在售数量突增超过近7日均值的 <b style="color:var(--accent-red)">200%</b> 以上<br>
+              3. 价格出现连续下跌，且卖出深度持续加大<br>
+              4. MACD出现死叉，KDJ进入超卖区且持续向下<br>
+              5. 成交量放大但价格持续走低（放量下跌）
+            </div>
+          </div>
+        </div>
+        <div id="dumpAlertContainer"></div>
+      </div>
+
+      <!-- ============ Compare Page ============ -->
+      <div class="page-section" id="page-compare">
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">悠悠有品 vs BUFF 跨平台比价</span>
+          </div>
+          <div class="card-body" style="padding:8px;">
+            <div id="compareChart" style="height:400px;"></div>
+          </div>
+        </div>
+        <div class="card" style="margin-top:16px;">
+          <div class="card-header">
+            <span class="card-title">价差套利机会</span>
+          </div>
+          <div class="card-body" style="padding:0;">
+            <table class="alert-table">
+              <thead>
+                <tr><th>饰品</th><th>悠悠价格</th><th>BUFF价格</th><th>价差</th><th>价差率</th><th>建议</th></tr>
+              </thead>
+              <tbody id="compareTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+// ============ Data Generation ============
+const SKINS = [
+  { id:1, name:'AK-47 | 火蛇', cat:'步枪', icon:'🔫', wear:'略磨', buffPrice:1856, youyouPrice:1789, change:2.34, vol:342, weekAvgVol:120 },
+  { id:2, name:'M4A4 | 龙王', cat:'步枪', icon:'🐉', wear:'崭新', buffPrice:3245, youyouPrice:3120, change:-1.56, vol:187, weekAvgVol:95 },
+  { id:3, name:'AWP | 二西莫夫', cat:'狙击枪', icon:'🎯', wear:'久经', buffPrice:298, youyouPrice:285, change:0.87, vol:1523, weekAvgVol:800 },
+  { id:4, name:'蝴蝶刀 | 渐变之色', cat:'刀具', icon:'🦋', wear:'崭新', buffPrice:8920, youyouPrice:8650, change:5.23, vol:45, weekAvgVol:12 },
+  { id:5, name:'运动手套 | 超导体', cat:'手套', icon:'🧤', wear:'略磨', buffPrice:12500, youyouPrice:12100, change:-3.21, vol:23, weekAvgVol:28 },
+  { id:6, name:'M4A1 | 印花集', cat:'步枪', icon:'🌸', wear:'崭新', buffPrice:567, youyouPrice:545, change:1.12, vol:890, weekAvgVol:450 },
+  { id:7, name:'USP | 杀意确认', cat:'手枪', icon:'💀', wear:'崭新', buffPrice:2890, youyouPrice:2780, change:-0.45, vol:156, weekAvgVol:130 },
+  { id:8, name:'AK-47 | 血色运动', cat:'步枪', icon:'💉', wear:'略磨', buffPrice:423, youyouPrice:408, change:8.56, vol:2100, weekAvgVol:350 },
+  { id:9, name:'沙漠之鹰 | 印花集', cat:'手枪', icon:'🦅', wear:'崭新', buffPrice:1234, youyouPrice:1190, change:0.34, vol:267, weekAvgVol:200 },
+  { id:10, name:'爪子刀 | 渐变大理石', cat:'刀具', icon:'🗡️', wear:'崭新', buffPrice:15600, youyouPrice:15100, change:-2.87, vol:18, weekAvgVol:22 },
+  { id:11, name:'AWP | 龙狙', cat:'狙击枪', icon:'🐲', wear:'崭新', buffPrice:98000, youyouPrice:95000, change:1.05, vol:3, weekAvgVol:2 },
+  { id:12, name:'格洛克 | 渐变之色', cat:'手枪', icon:'🔧', wear:'崭新', buffPrice:1456, youyouPrice:1398, change:-0.78, vol:345, weekAvgVol:280 },
+];
+
+const ALERTS_DATA = [
+  { skin:'AK-47 | 血色运动', type:'build', risk:'high', time:'10分钟前', detail:'过去2小时内成交量达2100件，为近7日均量(350件)的600%。悠悠有品在售数量从1200件降至340件，价格阶梯式上涨8.56%。检测到3个大商账号集中买入，总计购入约800件。', metrics:{vol:'2100', avgVol:'350', priceChg:'+8.56%', sellCount:'340↓'} },
+  { skin:'蝴蝶刀 | 渐变之色', type:'build', risk:'high', time:'35分钟前', detail:'该饰品近24h成交量45件，远超近7日均量12件(375%)。价格从¥8,470上涨至¥8,920(+5.31%)。BUFF在售数量从89件降至34件。大商"藏刀阁"新增持仓15件。', metrics:{vol:'45', avgVol:'12', priceChg:'+5.31%', sellCount:'34↓'} },
+  { skin:'运动手套 | 超导体', type:'dump', risk:'high', time:'1小时前', detail:'大商"手套帝国"在7天冷却期结束后集中挂售28件，当前在售数量激增。价格从¥12,900跌至¥12,100(-6.20%)。MACD出现明显死叉，KDJ已进入超卖区。成交量放大但价格持续走低，疑似出货行为。', metrics:{vol:'23', sellIncrease:'+180%', priceChg:'-6.20%', macd:'死叉'} },
+  { skin:'AK-47 | 火蛇', type:'surge', risk:'medium', time:'2小时前', detail:'价格突破近30日震荡区间上沿，从¥1,780上涨至¥1,856(+4.27%)。成交量342件为均值的285%。KDJ金叉确认，MACD柱状图由负转正。后续需关注能否站稳¥1,850支撑位。', metrics:{vol:'342', resistance:'¥1,850', priceChg:'+4.27%', signal:'金叉'} },
+  { skin:'爪子刀 | 渐变大理石', type:'dump', risk:'medium', time:'3小时前', detail:'过去48h内在售数量增加67%，价格下跌2.87%。大商"刀锋意志"连续两天减仓，卖出约8件。KDJ(K=22, D=35, J=−4)处于超卖区间。需持续观察是否为短期调整或出货信号。', metrics:{vol:'18', sellIncrease:'+67%', priceChg:'-2.87%', kdj:'超卖'} },
+  { skin:'M4A4 | 龙王', type:'drop', risk:'medium', time:'5小时前', detail:'价格从¥3,297跌至¥3,245(-1.56%)，跌破5日均线。成交量187件略高于均值，卖盘力量增加。MACD快线下穿慢线形成死叉。建议观望，若跌破¥3,200可能加速下行。', metrics:{vol:'187', support:'¥3,200', priceChg:'-1.56%', macd:'死叉'} },
+  { skin:'AK-47 | 血色运动', type:'build', risk:'high', time:'6小时前', detail:'早间监控到第二波扫货行为，悠悠有品低价挂单被快速消化。均价从¥390上涨至¥423(+8.46%)。该饰品近期换手率异常活跃，疑似有团队进行规模建仓。', metrics:{vol:'1800', avgVol:'350', priceChg:'+8.46%', turnover:'异常'} },
+];
+
+const MERCHANT_DATA = [
+  { skin:'AK-47 | 血色运动', merchant:'枪王集团', change:'+320件', holding:'812件' },
+  { skin:'蝴蝶刀 | 渐变之色', merchant:'藏刀阁', change:'+15件', holding:'47件' },
+  { skin:'AWP | 二西莫夫', merchant:'狙神殿堂', change:'+180件', holding:'520件' },
+  { skin:'M4A1 | 印花集', merchant:'花之印记', change:'+95件', holding:'234件' },
+  { skin:'格洛克 | 渐变之色', merchant:'手枪行家', change:'+60件', holding:'178件' },
+];
+
+// ============ Utility Functions ============
+function generateKlineData(basePrice, days) {
+  const data = [];
+  let price = basePrice;
+  const now = new Date();
+  for (let i = days; i >= 0; i--) {
+    const d = new Date(now);
+    d.setDate(d.getDate() - i);
+    const dateStr = d.toISOString().slice(0,10);
+    const open = price;
+    const volatility = price * 0.03;
+    const close = open + (Math.random() - 0.48) * volatility;
+    const high = Math.max(open, close) + Math.random() * volatility * 0.5;
+    const low = Math.min(open, close) - Math.random() * volatility * 0.5;
+    const vol = Math.floor(Math.random() * 200 + 50);
+    data.push({ date:dateStr, open:+open.toFixed(2), close:+close.toFixed(2), high:+high.toFixed(2), low:+low.toFixed(2), vol });
+    price = close;
+  }
+  return data;
+}
+
+function calcEMA(data, period) {
+  const k = 2 / (period + 1);
+  const ema = [data[0]];
+  for (let i = 1; i < data.length; i++) {
+    ema.push(data[i] * k + ema[i-1] * (1 - k));
+  }
+  return ema;
+}
+
+function calcMACD(closes) {
+  const ema12 = calcEMA(closes, 12);
+  const ema26 = calcEMA(closes, 26);
+  const dif = ema12.map((v, i) => +(v - ema26[i]).toFixed(4));
+  const dea = calcEMA(dif, 9);
+  const macdBar = dif.map((v, i) => +((v - dea[i]) * 2).toFixed(4));
+  return { dif, dea: dea.map(v => +v.toFixed(4)), bar: macdBar };
+}
+
+function calcKDJ(klineData, period = 9) {
+  const K = [], D = [], J = [];
+  for (let i = 0; i < klineData.length; i++) {
+    const start = Math.max(0, i - period + 1);
+    const slice = klineData.slice(start, i + 1);
+    const low = Math.min(...slice.map(d => d.low));
+    const high = Math.max(...slice.map(d => d.high));
+    const rsv = high === low ? 50 : ((klineData[i].close - low) / (high - low)) * 100;
+    const prevK = K.length > 0 ? K[K.length - 1] : 50;
+    const prevD = D.length > 0 ? D[D.length - 1] : 50;
+    const kVal = +(2/3 * prevK + 1/3 * rsv).toFixed(2);
+    const dVal = +(2/3 * prevD + 1/3 * kVal).toFixed(2);
+    const jVal = +(3 * kVal - 2 * dVal).toFixed(2);
+    K.push(kVal);
+    D.push(dVal);
+    J.push(jVal);
+  }
+  return { K, D, J };
+}
+
+// ============ Navigation ============
+let currentPage = 'dashboard';
+let currentSkin = SKINS[0];
+
+function switchPage(page) {
+  document.querySelectorAll('.page-section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  const section = document.getElementById('page-' + page);
+  if (section) section.classList.add('active');
+  const navItems = document.querySelectorAll('.nav-item');
+  const pageMap = { dashboard:0, watchlist:1, analysis:2, alerts:3, buildAlert:4, dumpAlert:5, compare:6 };
+  if (pageMap[page] !== undefined) navItems[pageMap[page]].classList.add('active');
+  currentPage = page;
+  if (page === 'analysis') renderAnalysis();
+  if (page === 'alerts') renderAlerts('all');
+  if (page === 'buildAlert') renderBuildAlerts();
+  if (page === 'dumpAlert') renderDumpAlerts();
+  if (page === 'compare') renderCompare();
+  if (page === 'watchlist') renderWatchlist();
+}
+
+function selectSkin(skinId) {
+  currentSkin = SKINS.find(s => s.id === skinId) || SKINS[0];
+  switchPage('analysis');
+}
+
+// ============ Dashboard ============
+function initDashboard() {
+  renderMarketTrendChart();
+  renderDashAlerts();
+  renderVolumeRank();
+  renderMerchantTable();
+}
+
+function renderMarketTrendChart() {
+  const chart = echarts.init(document.getElementById('marketTrendChart'));
+  const days = 30;
+  const dates = [];
+  const buffData = [];
+  const youyouData = [];
+  let bv = 12000, yv = 10800;
+  const now = new Date();
+  for (let i = days; i >= 0; i--) {
+    const d = new Date(now); d.setDate(d.getDate() - i);
+    dates.push((d.getMonth()+1) + '/' + d.getDate());
+    bv += (Math.random() - 0.47) * 150;
+    yv += (Math.random() - 0.48) * 130;
+    buffData.push(+bv.toFixed(0));
+    youyouData.push(+yv.toFixed(0));
+  }
+  chart.setOption({
+    tooltip: { trigger:'axis' },
+    legend: { data:['BUFF指数','悠悠指数'], textStyle:{color:'#94a3b8'}, top:5 },
+    grid: { left:50, right:20, top:40, bottom:30 },
+    xAxis: { type:'category', data:dates, axisLine:{lineStyle:{color:'#2a3548'}}, axisLabel:{color:'#64748b',fontSize:11} },
+    yAxis: { type:'value', splitLine:{lineStyle:{color:'#1e293b'}}, axisLabel:{color:'#64748b',fontSize:11} },
+    series: [
+      { name:'BUFF指数', type:'line', data:buffData, smooth:true, lineStyle:{width:2,color:'#3b82f6'}, itemStyle:{color:'#3b82f6'}, areaStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'rgba(59,130,246,0.15)'},{offset:1,color:'rgba(59,130,246,0)'}])} },
+      { name:'悠悠指数', type:'line', data:youyouData, smooth:true, lineStyle:{width:2,color:'#8b5cf6'}, itemStyle:{color:'#8b5cf6'}, areaStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'rgba(139,92,246,0.15)'},{offset:1,color:'rgba(139,92,246,0)'}])} },
+    ]
+  });
+  window.addEventListener('resize', () => chart.resize());
+}
+
+function renderDashAlerts() {
+  const tbody = document.getElementById('dashAlertTable');
+  tbody.innerHTML = ALERTS_DATA.slice(0, 5).map(a => {
+    const typeMap = { build:'建仓', dump:'跑路', surge:'放量涨', drop:'异常跌' };
+    const typeClass = a.type;
+    const riskClass = a.risk;
+    return `<tr>
+      <td>${a.skin}</td>
+      <td><span class="alert-tag ${typeClass}">${typeMap[a.type]}</span></td>
+      <td><span class="risk-badge ${riskClass}"><span class="risk-dot ${riskClass}"></span>${a.risk==='high'?'高':'中'}</span></td>
+      <td style="color:var(--text-muted)">${a.time}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderVolumeRank() {
+  const chart = echarts.init(document.getElementById('volumeRankChart'));
+  const top5 = [...SKINS].sort((a,b) => (b.vol/b.weekAvgVol) - (a.vol/a.weekAvgVol)).slice(0, 5).reverse();
+  chart.setOption({
+    tooltip: { trigger:'axis', axisPointer:{type:'shadow'} },
+    grid: { left:140, right:40, top:10, bottom:10 },
+    xAxis: { type:'value', splitLine:{lineStyle:{color:'#1e293b'}}, axisLabel:{color:'#64748b'} },
+    yAxis: { type:'category', data:top5.map(s=>s.name.length>12?s.name.slice(0,12)+'..':s.name), axisLine:{lineStyle:{color:'#2a3548'}}, axisLabel:{color:'#94a3b8',fontSize:11} },
+    series: [{
+      type:'bar',
+      data:top5.map(s => ({
+        value: +(s.vol/s.weekAvgVol*100).toFixed(0),
+        itemStyle: { color: s.vol/s.weekAvgVol > 3 ? '#ef4444' : s.vol/s.weekAvgVol > 2 ? '#f59e0b' : '#3b82f6' }
+      })),
+      barWidth: 20,
+      label: { show:true, position:'right', color:'#94a3b8', fontSize:11, formatter:'{c}%' }
+    }]
+  });
+  window.addEventListener('resize', () => chart.resize());
+}
+
+function renderMerchantTable() {
+  const tbody = document.getElementById('merchantTable');
+  tbody.innerHTML = MERCHANT_DATA.map(m => `
+    <tr>
+      <td>${m.skin}</td>
+      <td style="color:var(--accent-cyan)">${m.merchant}</td>
+      <td style="color:var(--accent-orange);font-weight:600">${m.change}</td>
+      <td>${m.holding}</td>
+    </tr>
+  `).join('');
+}
+
+// ============ Watchlist ============
+function renderWatchlist(filter = '') {
+  const container = document.getElementById('watchlistContainer');
+  const filtered = SKINS.filter(s => s.name.toLowerCase().includes(filter.toLowerCase()));
+  container.innerHTML = filtered.map(s => {
+    const changeClass = s.change >= 0 ? 'up' : 'down';
+    const changeStr = s.change >= 0 ? '+' + s.change.toFixed(2) + '%' : s.change.toFixed(2) + '%';
+    const volRatio = s.vol / s.weekAvgVol;
+    const hasAlert = volRatio > 2.5;
+    return `
+    <div class="watchlist-item ${currentSkin.id===s.id?'selected':''}" onclick="selectSkin(${s.id})">
+      <div class="watchlist-img">${s.icon}</div>
+      <div>
+        <div class="watchlist-name">${s.name}</div>
+        <div class="watchlist-sub">${s.cat} · ${s.wear}</div>
+      </div>
+      <div>
+        <div class="watchlist-price">¥${s.buffPrice.toLocaleString()}</div>
+        <div style="font-size:11px;color:var(--text-muted)">BUFF</div>
+      </div>
+      <div class="watchlist-change ${changeClass}">${changeStr}</div>
+      <div class="watchlist-vol">${s.vol}件</div>
+      <div class="watchlist-alert">${hasAlert ? '<span class="risk-dot high"></span>' : '<span style="color:var(--text-muted)">--</span>'}</div>
+    </div>`;
+  }).join('');
+}
+function filterWatchlist() {
+  renderWatchlist(document.getElementById('searchInput').value);
+}
+function sortWatchlist(by) {
+  if (by==='price') SKINS.sort((a,b)=>b.buffPrice-a.buffPrice);
+  else if (by==='change') SKINS.sort((a,b)=>b.change-a.change);
+  else if (by==='volume') SKINS.sort((a,b)=>b.vol-a.vol);
+  else SKINS.sort((a,b)=>a.name.localeCompare(b.name));
+  renderWatchlist();
+}
+
+// ============ Analysis ============
+let klineData = [];
+
+function renderAnalysis() {
+  const s = currentSkin;
+  // Header
+  const header = document.getElementById('analysisHeader');
+  const changeClass = s.change >= 0 ? 'up' : 'down';
+  const changeSign = s.change >= 0 ? '+' : '';
+  header.innerHTML = `
+    <div class="analysis-skin-info">
+      <div class="analysis-skin-icon">${s.icon}</div>
+      <div>
+        <div class="analysis-skin-name">${s.name}</div>
+        <div class="analysis-skin-cat">${s.cat} · ${s.wear} · 7天冷却</div>
+      </div>
+    </div>
+    <div class="analysis-prices">
+      <div class="analysis-price-block">
+        <div class="analysis-price-label"><span class="platform-badge buff">BUFF</span></div>
+        <div class="analysis-price-val">¥${s.buffPrice.toLocaleString()}</div>
+        <div class="analysis-price-chg ${changeClass}">${changeSign}${s.change}%</div>
+      </div>
+      <div class="analysis-price-block">
+        <div class="analysis-price-label"><span class="platform-badge youyou">悠悠有品</span></div>
+        <div class="analysis-price-val">¥${s.youyouPrice.toLocaleString()}</div>
+        <div class="analysis-price-chg ${changeClass}">${changeSign}${(s.change * 0.9).toFixed(2)}%</div>
+      </div>
+      <div class="analysis-price-block">
+        <div class="analysis-price-label">24h成交量</div>
+        <div class="analysis-price-val" style="font-size:18px">${s.vol}件</div>
+        <div class="analysis-price-chg" style="color:${s.vol/s.weekAvgVol>2?'var(--accent-red)':'var(--text-muted)'}">均量${s.weekAvgVol}件 (${(s.vol/s.weekAvgVol*100).toFixed(0)}%)</div>
+      </div>
+    </div>
+  `;
+
+  // Generate data
+  klineData = generateKlineData(s.buffPrice * 0.92, 60);
+  renderKlineChart();
+  renderKDJChart();
+  renderMACDChart();
+  renderPrediction();
+  renderStructCharts();
+}
+
+function renderKlineChart() {
+  const chart = echarts.init(document.getElementById('klineChart'));
+  const dates = klineData.map(d => d.date);
+  const ohlc = klineData.map(d => [d.open, d.close, d.low, d.high]);
+  const vols = klineData.map((d, i) => ({
+    value: d.vol,
+    itemStyle: { color: d.close >= d.open ? 'rgba(239,68,68,0.6)' : 'rgba(16,185,129,0.6)' }
+  }));
+
+  // MA lines
+  const closes = klineData.map(d => d.close);
+  const ma5 = closes.map((_, i) => {
+    if (i < 4) return null;
+    return +(closes.slice(i-4, i+1).reduce((a,b)=>a+b,0) / 5).toFixed(2);
+  });
+  const ma20 = closes.map((_, i) => {
+    if (i < 19) return null;
+    return +(closes.slice(i-19, i+1).reduce((a,b)=>a+b,0) / 20).toFixed(2);
+  });
+
+  chart.setOption({
+    tooltip: { trigger:'axis', axisPointer:{type:'cross'}, backgroundColor:'#1a2332', borderColor:'#2a3548', textStyle:{color:'#e2e8f0'} },
+    axisPointer: { link:[{xAxisIndex:'all'}] },
+    grid: [
+      { left:60, right:30, top:20, height:'65%' },
+      { left:60, right:30, top:'78%', height:'16%' }
+    ],
+    xAxis: [
+      { type:'category', data:dates, gridIndex:0, axisLine:{lineStyle:{color:'#2a3548'}}, axisLabel:{color:'#64748b',fontSize:10}, boundaryGap:true },
+      { type:'category', data:dates, gridIndex:1, axisLine:{lineStyle:{color:'#2a3548'}}, axisLabel:{show:false}, boundaryGap:true }
+    ],
+    yAxis: [
+      { scale:true, gridIndex:0, splitLine:{lineStyle:{color:'#1e293b'}}, axisLabel:{color:'#64748b',fontSize:11} },
+      { scale:true, gridIndex:1, splitLine:{lineStyle:{color:'#1e293b'}}, axisLabel:{color:'#64748b',fontSize:10} }
+    ],
+    dataZoom: [
+      { type:'inside', xAxisIndex:[0,1], start:60, end:100 },
+      { type:'slider', xAxisIndex:[0,1], start:60, end:100, height:20, bottom:5, borderColor:'#2a3548', fillerColor:'rgba(59,130,246,0.2)', textStyle:{color:'#64748b'} }
+    ],
+    series: [
+      {
+        name:'K线',
+        type:'candlestick',
+        data:ohlc,
+        xAxisIndex:0, yAxisIndex:0,
+        itemStyle: {
+          color:'#ef4444', color0:'#10b981',
+          borderColor:'#ef4444', borderColor0:'#10b981'
+        }
+      },
+      { name:'MA5', type:'line', data:ma5, smooth:true, lineStyle:{width:1,color:'#f59e0b'}, symbol:'none', xAxisIndex:0, yAxisIndex:0 },
+      { name:'MA20', type:'line', data:ma20, smooth:true, lineStyle:{width:1,color:'#06b6d4'}, symbol:'none', xAxisIndex:0, yAxisIndex:0 },
+      {
+        name:'成交量',
+        type:'bar',
+        data:vols,
+        xAxisIndex:1, yAxisIndex:1,
+        barWidth:'60%'
+      }
+    ]
+  });
+  window.addEventListener('resize', () => chart.resize());
+}
+
+function renderKDJChart() {
+  const chart = echarts.init(document.getElementById('kdjChart'));
+  const kdj = calcKDJ(klineData);
+  const dates = klineData.map(d => d.date);
+
+  // Determine signal
+  const lastK = kdj.K[kdj.K.length-1];
+  const lastD = kdj.D[kdj.D.length-1];
+  const lastJ = kdj.J[kdj.J.length-1];
+  const prevK = kdj.K[kdj.K.length-2];
+  const prevD = kdj.D[kdj.D.length-2];
+  let signal = 'neutral', signalText = '观望';
+  if (lastK > lastD && prevK <= prevD && lastJ < 30) { signal = 'buy'; signalText = '金叉买入'; }
+  else if (lastK < lastD && prevK >= prevD && lastJ > 70) { signal = 'sell'; signalText = '死叉卖出'; }
+  else if (lastJ < 20) { signal = 'buy'; signalText = '超卖'; }
+  else if (lastJ > 80) { signal = 'sell'; signalText = '超买'; }
+
+  const sigEl = document.getElementById('kdjSignal');
+  sigEl.textContent = signalText;
+  sigEl.className = 'indicator-signal ' + signal;
+
+  chart.setOption({
+    tooltip: { trigger:'axis', backgroundColor:'#1a2332', borderColor:'#2a3548', textStyle:{color:'#e2e8f0'} },
+    legend: { data:['K','D','J'], textStyle:{color:'#94a3b8',fontSize:11}, top:5, right:10 },
+    grid: { left:50, right:20, top:30, bottom:30 },
+    xAxis: { type:'category', data:dates, axisLine:{lineStyle:{color:'#2a3548'}}, axisLabel:{color:'#64748b',fontSize:10} },
+    yAxis: {
+      type:'value', min:0, max:100,
+      splitLine:{lineStyle:{color:'#1e293b'}},
+      axisLabel:{color:'#64748b',fontSize:10},
+      markLine: { silent:true }
+    },
+    dataZoom: [{ type:'inside', start:60, end:100 }],
+    visualMap: { show:false },
+    series: [
+      { name:'K', type:'line', data:kdj.K, smooth:true, lineStyle:{width:1.5,color:'#3b82f6'}, symbol:'none' },
+      { name:'D', type:'line', data:kdj.D, smooth:true, lineStyle:{width:1.5,color:'#f59e0b'}, symbol:'none' },
+      { name:'J', type:'line', data:kdj.J, smooth:true, lineStyle:{width:1.5,color:'#8b5cf6'}, symbol:'none' },
+    ]
+  });
+  window.addEventListener('resize', () => chart.resize());
+}
+
+function renderMACDChart() {
+  const chart = echarts.init(document.getElementById('macdChart'));
+  const closes = klineData.map(d => d.close);
+  const macd = calcMACD(closes);
+  const dates = klineData.map(d => d.date);
+
+  // Determine signal
+  const lastDif = macd.dif[macd.dif.length-1];
+  const lastDea = macd.dea[macd.dea.length-1];
+  const prevDif = macd.dif[macd.dif.length-2];
+  const prevDea = macd.dea[macd.dea.length-2];
+  let signal = 'neutral', signalText = '观望';
+  if (lastDif > lastDea && prevDif <= prevDea) { signal = 'buy'; signalText = '金叉买入'; }
+  else if (lastDif < lastDea && prevDif >= prevDea) { signal = 'sell'; signalText = '死叉卖出'; }
+  else if (lastDif > lastDea) { signal = 'buy'; signalText = '多头'; }
+  else { signal = 'sell'; signalText = '空头'; }
+
+  const sigEl = document.getElementById('macdSignal');
+  sigEl.textContent = signalText;
+  sigEl.className = 'indicator-signal ' + signal;
+
+  chart.setOption({
+    tooltip: { trigger:'axis', backgroundColor:'#1a2332', borderColor:'#2a3548', textStyle:{color:'#e2e8f0'} },
+    legend: { data:['DIF','DEA','MACD'], textStyle:{color:'#94a3b8',fontSize:11}, top:5, right:10 },
+    grid: { left:50, right:20, top:30, bottom:30 },
+    xAxis: { type:'category', data:dates, axisLine:{lineStyle:{color:'#2a3548'}}, axisLabel:{color:'#64748b',fontSize:10} },
+    yAxis: { type:'value', splitLine:{lineStyle:{color:'#1e293b'}}, axisLabel:{color:'#64748b',fontSize:10} },
+    dataZoom: [{ type:'inside', start:60, end:100 }],
+    series: [
+      { name:'DIF', type:'line', data:macd.dif, smooth:true, lineStyle:{width:1.5,color:'#3b82f6'}, symbol:'none' },
+      { name:'DEA', type:'line', data:macd.dea, smooth:true, lineStyle:{width:1.5,color:'#f59e0b'}, symbol:'none' },
+      {
+        name:'MACD', type:'bar', data:macd.bar.map(v => ({
+          value: v,
+          itemStyle: { color: v >= 0 ? 'rgba(239,68,68,0.7)' : 'rgba(16,185,129,0.7)' }
+        })),
+        barWidth:'60%'
+      }
+    ]
+  });
+  window.addEventListener('resize', () => chart.resize());
+}
+
+function renderPrediction() {
+  const s = currentSkin;
+  const grid = document.getElementById('predictionGrid');
+  const closes = klineData.map(d => d.close);
+  const lastPrice = closes[closes.length - 1];
+  const macd = calcMACD(closes);
+  const kdj = calcKDJ(klineData);
+
+  // Simple prediction logic
+  const lastDif = macd.dif[macd.dif.length-1];
+  const lastDea = macd.dea[macd.dea.length-1];
+  const lastJ = kdj.J[kdj.J.length-1];
+  const volRatio = s.vol / s.weekAvgVol;
+
+  let trend = '震荡', trendColor = 'var(--text-secondary)';
+  let pred7d = lastPrice, pred14d = lastPrice;
+  let confidence = 60;
+
+  if (lastDif > lastDea && lastJ > 50 && lastJ < 80) {
+    trend = '看涨'; trendColor = 'var(--accent-red)';
+    pred7d = lastPrice * 1.03; pred14d = lastPrice * 1.05;
+    confidence = 72;
+  } else if (lastDif < lastDea && lastJ < 50 && lastJ > 20) {
+    trend = '看跌'; trendColor = 'var(--down-color)';
+    pred7d = lastPrice * 0.97; pred14d = lastPrice * 0.94;
+    confidence = 68;
+  } else if (lastJ < 20) {
+    trend = '超卖反弹'; trendColor = 'var(--accent-orange)';
+    pred7d = lastPrice * 1.02; pred14d = lastPrice * 1.04;
+    confidence = 55;
+  } else if (lastJ > 80) {
+    trend = '超买回调'; trendColor = 'var(--accent-orange)';
+    pred7d = lastPrice * 0.98; pred14d = lastPrice * 0.96;
+    confidence = 58;
+  }
+
+  if (volRatio > 3) confidence = Math.min(confidence + 10, 85);
+
+  grid.innerHTML = `
+    <div class="prediction-item">
+      <div class="prediction-label">综合趋势判断</div>
+      <div class="prediction-value" style="color:${trendColor}">${trend}</div>
+      <div class="prediction-sub">基于KDJ+MACD</div>
+    </div>
+    <div class="prediction-item">
+      <div class="prediction-label">7天预测价格</div>
+      <div class="prediction-value">¥${pred7d.toFixed(0)}</div>
+      <div class="prediction-sub" style="color:${pred7d>lastPrice?'var(--up-color)':'var(--down-color)'}">
+        ${pred7d>lastPrice?'+':''}${((pred7d-lastPrice)/lastPrice*100).toFixed(1)}%
+      </div>
+    </div>
+    <div class="prediction-item">
+      <div class="prediction-label">14天预测价格</div>
+      <div class="prediction-value">¥${pred14d.toFixed(0)}</div>
+      <div class="prediction-sub" style="color:${pred14d>lastPrice?'var(--up-color)':'var(--down-color)'}">
+        ${pred14d>lastPrice?'+':''}${((pred14d-lastPrice)/lastPrice*100).toFixed(1)}%
+      </div>
+    </div>
+    <div class="prediction-item">
+      <div class="prediction-label">预测置信度</div>
+      <div class="prediction-value" style="color:${confidence>70?'var(--accent-green)':'var(--accent-orange)'}">${confidence}%</div>
+      <div class="prediction-sub">量价综合评估</div>
+    </div>
+  `;
+}
+
+function renderStructCharts() {
+  // Youyou structure
+  const chart1 = echarts.init(document.getElementById('youyouStructChart'));
+  const priceRanges = ['低于均价10%', '均价±5%', '均价±10%', '高于均价10%', '高于均价20%'];
+  chart1.setOption({
+    tooltip: { trigger:'axis', axisPointer:{type:'shadow'} },
+    grid: { left:50, right:20, top:20, bottom:40 },
+    xAxis: { type:'category', data:priceRanges, axisLine:{lineStyle:{color:'#2a3548'}}, axisLabel:{color:'#64748b',fontSize:10,rotate:20} },
+    yAxis: { type:'value', splitLine:{lineStyle:{color:'#1e293b'}}, axisLabel:{color:'#64748b'}, name:'在售数量', nameTextStyle:{color:'#64748b',fontSize:10} },
+    series: [{
+      type:'bar', data:[12, 45, 78, 34, 8],
+      barWidth: 30,
+      itemStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'#8b5cf6'},{offset:1,color:'rgba(139,92,246,0.3)'}]) }
+    }]
+  });
+
+  // BUFF structure
+  const chart2 = echarts.init(document.getElementById('buffStructChart'));
+  chart2.setOption({
+    tooltip: { trigger:'axis', axisPointer:{type:'shadow'} },
+    grid: { left:50, right:20, top:20, bottom:40 },
+    xAxis: { type:'category', data:priceRanges, axisLine:{lineStyle:{color:'#2a3548'}}, axisLabel:{color:'#64748b',fontSize:10,rotate:20} },
+    yAxis: { type:'value', splitLine:{lineStyle:{color:'#1e293b'}}, axisLabel:{color:'#64748b'}, name:'在售数量', nameTextStyle:{color:'#64748b',fontSize:10} },
+    series: [{
+      type:'bar', data:[18, 62, 95, 41, 15],
+      barWidth: 30,
+      itemStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'#3b82f6'},{offset:1,color:'rgba(59,130,246,0.3)'}]) }
+    }]
+  });
+
+  window.addEventListener('resize', () => { chart1.resize(); chart2.resize(); });
+}
+
+// ============ Alerts ============
+function renderAlerts(filter) {
+  const container = document.getElementById('alertsContainer');
+  const filtered = filter === 'all' ? ALERTS_DATA : ALERTS_DATA.filter(a => a.type === filter);
+  container.innerHTML = filtered.map(a => {
+    const typeMap = { build:'建仓预警', dump:'跑路预警', surge:'放量上涨', drop:'异常下跌' };
+    const metricsHtml = Object.entries(a.metrics).map(([k, v]) => {
+      const labelMap = { vol:'成交量', avgVol:'7日均量', priceChg:'价格变动', sellCount:'在售数量', sellIncrease:'在售增幅', macd:'MACD信号', resistance:'阻力位', support:'支撑位', signal:'技术信号', turnover:'换手率', kdj:'KDJ状态' };
+      return `<div class="alert-metric"><div class="alert-metric-label">${labelMap[k]||k}</div><div class="alert-metric-value">${v}</div></div>`;
+    }).join('');
+    return `
+      <div class="alert-detail-card type-${a.type}">
+        <div class="alert-detail-top">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span class="alert-tag ${a.type}">${typeMap[a.type]}</span>
+            <span class="alert-detail-name">${a.skin}</span>
+            <span class="risk-badge ${a.risk}"><span class="risk-dot ${a.risk}"></span>${a.risk==='high'?'高风险':'中风险'}</span>
+          </div>
+          <span class="alert-detail-time">${a.time}</span>
+        </div>
+        <div class="alert-detail-body">${a.detail}</div>
+        <div class="alert-detail-metrics">${metricsHtml}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+function filterAlerts(type, btn) {
+  document.querySelectorAll('.alert-filter-btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  renderAlerts(type);
+}
+
+function renderBuildAlerts() {
+  const container = document.getElementById('buildAlertContainer');
+  const buildAlerts = ALERTS_DATA.filter(a => a.type === 'build');
+  container.innerHTML = buildAlerts.map(a => {
+    const metricsHtml = Object.entries(a.metrics).map(([k, v]) => {
+      const labelMap = { vol:'成交量', avgVol:'7日均量', priceChg:'价格涨幅', sellCount:'在售数量', turnover:'换手率' };
+      return `<div class="alert-metric"><div class="alert-metric-label">${labelMap[k]||k}</div><div class="alert-metric-value">${v}</div></div>`;
+    }).join('');
+    return `
+      <div class="alert-detail-card type-build">
+        <div class="alert-detail-top">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span class="alert-tag build">建仓预警</span>
+            <span class="alert-detail-name">${a.skin}</span>
+            <span class="risk-badge ${a.risk}"><span class="risk-dot ${a.risk}"></span>${a.risk==='high'?'高风险':'中风险'}</span>
+          </div>
+          <span class="alert-detail-time">${a.time}</span>
+        </div>
+        <div class="alert-detail-body">${a.detail}</div>
+        <div class="alert-detail-metrics">${metricsHtml}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderDumpAlerts() {
+  const container = document.getElementById('dumpAlertContainer');
+  const dumpAlerts = ALERTS_DATA.filter(a => a.type === 'dump');
+  container.innerHTML = dumpAlerts.map(a => {
+    const metricsHtml = Object.entries(a.metrics).map(([k, v]) => {
+      const labelMap = { vol:'成交量', sellIncrease:'在售增幅', priceChg:'价格跌幅', macd:'MACD信号', kdj:'KDJ状态' };
+      return `<div class="alert-metric"><div class="alert-metric-label">${labelMap[k]||k}</div><div class="alert-metric-value">${v}</div></div>`;
+    }).join('');
+    return `
+      <div class="alert-detail-card type-dump">
+        <div class="alert-detail-top">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span class="alert-tag dump">跑路预警</span>
+            <span class="alert-detail-name">${a.skin}</span>
+            <span class="risk-badge ${a.risk}"><span class="risk-dot ${a.risk}"></span>${a.risk==='high'?'高风险':'中风险'}</span>
+          </div>
+          <span class="alert-detail-time">${a.time}</span>
+        </div>
+        <div class="alert-detail-body">${a.detail}</div>
+        <div class="alert-detail-metrics">${metricsHtml}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+// ============ Compare ============
+function renderCompare() {
+  const chart = echarts.init(document.getElementById('compareChart'));
+  const names = SKINS.slice(0, 8).map(s => s.name.split('|')[1]?.trim() || s.name);
+  chart.setOption({
+    tooltip: { trigger:'axis', axisPointer:{type:'shadow'} },
+    legend: { data:['BUFF','悠悠有品'], textStyle:{color:'#94a3b8'}, top:5 },
+    grid: { left:60, right:30, top:40, bottom:60 },
+    xAxis: { type:'category', data:names, axisLine:{lineStyle:{color:'#2a3548'}}, axisLabel:{color:'#64748b',fontSize:11,rotate:25} },
+    yAxis: { type:'value', splitLine:{lineStyle:{color:'#1e293b'}}, axisLabel:{color:'#64748b',formatter:'¥{value}'} },
+    series: [
+      { name:'BUFF', type:'bar', data:SKINS.slice(0,8).map(s=>s.buffPrice), barWidth:25, itemStyle:{color:'#3b82f6'} },
+      { name:'悠悠有品', type:'bar', data:SKINS.slice(0,8).map(s=>s.youyouPrice), barWidth:25, itemStyle:{color:'#8b5cf6'} }
+    ]
+  });
+  window.addEventListener('resize', () => chart.resize());
+
+  const tbody = document.getElementById('compareTable');
+  tbody.innerHTML = SKINS.map(s => {
+    const diff = s.buffPrice - s.youyouPrice;
+    const diffRate = (diff / s.youyouPrice * 100).toFixed(2);
+    let advice = '无';
+    if (diffRate > 3) advice = '<span style="color:var(--accent-green)">悠悠买入→BUFF卖出</span>';
+    else if (diffRate < -3) advice = '<span style="color:var(--accent-green)">BUFF买入→悠悠卖出</span>';
+    return `
+      <tr>
+        <td>${s.name}</td>
+        <td>¥${s.youyouPrice.toLocaleString()}</td>
+        <td>¥${s.buffPrice.toLocaleString()}</td>
+        <td style="color:${diff>0?'var(--up-color)':'var(--down-color)'}">¥${diff.toFixed(0)}</td>
+        <td style="color:${diffRate>2?'var(--accent-green)':'var(--text-muted)'}">${diffRate}%</td>
+        <td>${advice}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+// ============ Time ============
+function updateTime() {
+  const now = new Date();
+  document.getElementById('headerTime').textContent = now.toLocaleString('zh-CN', { hour12: false });
+}
+
+// ============ Chart Period Change ============
+function changeKlinePeriod(period) {
+  document.querySelectorAll('.chart-toolbar-left button').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+  const s = currentSkin;
+  const days = { '1h': 7, '4h': 30, '1d': 60, '1w': 180 }[period] || 60;
+  klineData = generateKlineData(s.buffPrice * 0.85, days);
+  renderKlineChart();
+  renderKDJChart();
+  renderMACDChart();
+  renderPrediction();
+}
+
+function updateMarketChart(range) {
+  document.querySelectorAll('.dashboard-grid .card-actions button').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+  renderMarketTrendChart();
+}
+
+// ============ Init ============
+document.addEventListener('DOMContentLoaded', () => {
+  updateTime();
+  setInterval(updateTime, 1000);
+  initDashboard();
+  renderWatchlist();
+});
+</script>
+</body>
+</html>
