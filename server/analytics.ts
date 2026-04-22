@@ -5,6 +5,7 @@ import type {
   AlertSignal,
   AnalysisResponse,
   BoardTaxonomy,
+  BottomReversalSignal,
   ChartCandle,
   CsfloatListingSummary,
   EarlyAccumulationSignal,
@@ -19,6 +20,7 @@ import type {
   ReasoningFactor,
   RecommendationCard,
   RecommendationResponse,
+  ScoreDriver,
   Snapshot,
   StatisticSnapshot,
   StrategyPlan,
@@ -82,12 +84,123 @@ function formatSignedPercent(value: number | null, digits = 2) {
   return `${sign}${value.toFixed(digits)}%`;
 }
 
+function normalizeContribution(value: number) {
+  return Number(value.toFixed(1));
+}
+
+function recordScoreDriver(
+  drivers: ScoreDriver[],
+  title: string,
+  contribution: number,
+  detail: string,
+  tone: ScoreDriver["tone"],
+) {
+  if (!Number.isFinite(contribution) || Math.abs(contribution) < 0.2) {
+    return 0;
+  }
+
+  const normalized = normalizeContribution(contribution);
+  drivers.push({
+    title,
+    contribution: normalized,
+    detail,
+    tone,
+  });
+  return normalized;
+}
+
 function uniq(values: Array<string | null | undefined>) {
   return [...new Set(values.filter((value): value is string => Boolean(value?.trim())).map((value) => value.trim()))];
 }
 
 function includesAny(text: string, tokens: string[]) {
   return tokens.some((token) => text.includes(token));
+}
+
+function normalizeItemText(text: string | null | undefined) {
+  return (text ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+const TEAM_STICKER_TOKENS = [
+  " gaming",
+  " esports",
+  " team",
+  "g2",
+  "faze",
+  "furia",
+  "pain",
+  "navi",
+  "navi",
+  "vitality",
+  "liquid",
+  "spirit",
+  "mouz",
+  "astralis",
+  "fnatic",
+  "nip",
+  "heroic",
+  "ence",
+  "complexity",
+  "cloud9",
+  "virtus.pro",
+  "vp",
+  "imperial",
+  "9z",
+  "monte",
+  "apeks",
+  "aurora",
+  "falcons",
+  "the mongolz",
+  "mongolz",
+  "lynn vision",
+  "3dmax",
+  "b8",
+  "ecstatic",
+  "big",
+  "og",
+  "gamerlegion",
+];
+
+function isStatTrakName(text: string) {
+  return includesAny(text, ["stattrak", "stat trak", "stattrak™"]);
+}
+
+function isHoloStickerName(text: string) {
+  return includesAny(text, ["(holo)", "（全息）", " holo ", "全息"]);
+}
+
+function isLikelyTeamSticker(text: string) {
+  if (
+    includesAny(text, [
+      "autograph",
+      "签名",
+      "souvenir",
+      "glitter",
+      "paper",
+      "foil",
+      "champion",
+      "mvp",
+      "选手",
+    ])
+  ) {
+    return false;
+  }
+
+  return TEAM_STICKER_TOKENS.some((token) => text.includes(token));
+}
+
+function countConsecutiveFromEnd(
+  values: number[],
+  predicate: (value: number, index: number, values: number[]) => boolean,
+) {
+  let count = 0;
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    if (!predicate(values[index]!, index, values)) {
+      break;
+    }
+    count += 1;
+  }
+  return count;
 }
 
 function sharePct(part: number | null, total: number | null) {
@@ -329,6 +442,7 @@ export function normalizeDetail(raw: Record<string, unknown>, goodId: string): N
     weapon: pickString(raw, ["weapon_name", "category_name"], [["weapon"], ["category"]]),
     exterior: pickString(raw, ["exterior_name", "wear_name"], [["wear"], ["exterior"]]),
     statistic: pickNumber(raw, ["goods_info.statistic", "statistic"], [["goods", "info", "statistic"]]),
+    updatedAt: pickString(raw, ["updated_at"], [["updated", "at"]]),
     buffPrice: pickNumber(
       raw,
       ["buff_sell_price", "buff_price"],
@@ -338,6 +452,16 @@ export function normalizeDetail(raw: Record<string, unknown>, goodId: string): N
       raw,
       ["yyyp_sell_price", "yyyp_price"],
       [["yyyp", "sell", "price"], ["yyyp", "price"]],
+    ),
+    buffBuyPrice: pickNumber(
+      raw,
+      ["buff_buy_price"],
+      [["buff", "buy", "price"]],
+    ),
+    yyypBuyPrice: pickNumber(
+      raw,
+      ["yyyp_buy_price"],
+      [["yyyp", "buy", "price"]],
     ),
     buffSell: pickNumber(
       raw,
@@ -364,29 +488,43 @@ export function normalizeDetail(raw: Record<string, unknown>, goodId: string): N
 }
 
 function buildSignalLabel(entryScore: number, dumpRiskScore: number) {
-  if (dumpRiskScore >= 72) {
+  if (dumpRiskScore >= 120) {
     return "高危跑路";
   }
 
-  if (entryScore >= 78) {
+  if (entryScore >= 120) {
     return "强势建仓";
   }
 
-  if (entryScore >= 62) {
+  if (entryScore >= 45) {
     return "观察低吸";
   }
 
-  if (dumpRiskScore >= 58) {
+  if (dumpRiskScore >= 45) {
     return "筹码松动";
   }
 
+  if (entryScore <= -80) {
+    return "不宜建仓";
+  }
+
   return "中性观察";
+}
+
+function toDirectionalScore(rawScore: number, opposingScore: number) {
+  return Number(
+    clamp((rawScore - 50) * 5 + (rawScore - opposingScore) * 1.5, -200, 200).toFixed(1),
+  );
 }
 
 const ENTRY_PUSH_THRESHOLD = 72;
 const EXIT_PUSH_THRESHOLD = 72;
 const WATCH_THRESHOLD = 60;
 const LLM_PUSH_THRESHOLD = 65;
+const ENTRY_SCORE_PUSH_THRESHOLD = 110;
+const EXIT_SCORE_PUSH_THRESHOLD = 110;
+const ENTRY_SCORE_WATCH_THRESHOLD = 40;
+const EXIT_SCORE_WATCH_THRESHOLD = 40;
 
 function createIdleAlertSignal(
   updatedAt: string,
@@ -396,7 +534,7 @@ function createIdleAlertSignal(
   return {
     level: "silent",
     shouldNotify: false,
-    score: Math.max(entryScore, dumpRiskScore),
+    score: Math.max(0, entryScore, dumpRiskScore),
     title: "未触发自动推送",
     detail: "当前仍以常规观察为主，后台会继续滚动刷新并等待更强共振。",
     sources: [],
@@ -429,11 +567,12 @@ function buildPushSignal(analysis: AnalysisResponse): AlertSignal {
   const watchRules: string[] = [];
 
   const entryByTeam =
-    marketContext.teamSignal.buildScore >= ENTRY_PUSH_THRESHOLD && scores.entryScore >= 68;
+    marketContext.teamSignal.buildScore >= ENTRY_PUSH_THRESHOLD &&
+    scores.entryScore >= ENTRY_SCORE_PUSH_THRESHOLD;
   if (entryByTeam) {
     sources.add("team");
     buildRules.push(
-      `团队建仓 ${marketContext.teamSignal.buildScore}/100 与建仓分 ${scores.entryScore}/100 同步过线`,
+      `团队建仓 ${marketContext.teamSignal.buildScore}/100 与建仓分 ${scores.entryScore}/200 同步过线`,
     );
   }
 
@@ -450,11 +589,12 @@ function buildPushSignal(analysis: AnalysisResponse): AlertSignal {
   }
 
   const exitByTeam =
-    marketContext.teamSignal.exitScore >= EXIT_PUSH_THRESHOLD && scores.dumpRiskScore >= 68;
+    marketContext.teamSignal.exitScore >= EXIT_PUSH_THRESHOLD &&
+    scores.dumpRiskScore >= EXIT_SCORE_PUSH_THRESHOLD;
   if (exitByTeam) {
     sources.add("team");
     exitRules.push(
-      `团队撤退 ${marketContext.teamSignal.exitScore}/100 与风险分 ${scores.dumpRiskScore}/100 同步过线`,
+      `团队撤退 ${marketContext.teamSignal.exitScore}/100 与风险分 ${scores.dumpRiskScore}/200 同步过线`,
     );
   }
 
@@ -475,7 +615,7 @@ function buildPushSignal(analysis: AnalysisResponse): AlertSignal {
     !entryByTeam &&
     !entryByLlm &&
     (marketContext.teamSignal.buildScore >= WATCH_THRESHOLD ||
-      scores.entryScore >= 64 ||
+      scores.entryScore >= ENTRY_SCORE_WATCH_THRESHOLD ||
       (llm.status === "ok" &&
         ((llm.buildSignalStrength ?? 0) >= WATCH_THRESHOLD ||
           llm.alertDecision === "watch_closely")));
@@ -487,7 +627,7 @@ function buildPushSignal(analysis: AnalysisResponse): AlertSignal {
     !exitByTeam &&
     !exitByLlm &&
     (marketContext.teamSignal.exitScore >= WATCH_THRESHOLD ||
-      scores.dumpRiskScore >= 62 ||
+      scores.dumpRiskScore >= EXIT_SCORE_WATCH_THRESHOLD ||
       (llm.status === "ok" &&
         ((llm.dumpSignalStrength ?? 0) >= WATCH_THRESHOLD ||
           llm.alertDecision === "watch_closely")));
@@ -889,6 +1029,216 @@ function buildTaxonomy(detail: NormalizedDetail, latestPrice: number | null): Bo
   };
 }
 
+type AutonomousEligibility = {
+  passed: boolean;
+  summary: string;
+  reasons: string[];
+};
+
+function evaluateAutonomousRecommendationEligibility(analysis: AnalysisResponse): AutonomousEligibility {
+  const nameText = normalizeItemText(analysis.item.name);
+  const statistic = analysis.statistic.current;
+
+  if (isStatTrakName(nameText)) {
+    return {
+      passed: false,
+      summary: "StatTrak™ 标的不纳入自主推荐池",
+      reasons: ["当前标的带有 StatTrak™ 标签，按你的要求直接剔除。"],
+    };
+  }
+
+  if (analysis.taxonomy.categoryKey === "sticker") {
+    if (!isHoloStickerName(nameText)) {
+      return {
+        passed: false,
+        summary: "非全息贴纸不纳入自主推荐池",
+        reasons: ["当前贴纸不是全息品质，已按规则剔除。"],
+      };
+    }
+
+    if (!isLikelyTeamSticker(nameText)) {
+      return {
+        passed: false,
+        summary: "仅保留全息战队贴纸",
+        reasons: ["当前贴纸更像选手签名或非战队题材，不进入自主推荐池。"],
+      };
+    }
+
+    return {
+      passed: true,
+      summary: "全息战队贴纸进入自主推荐池",
+      reasons: ["当前贴纸满足“全息 + 战队题材”的自主推荐条件。"],
+    };
+  }
+
+  if (analysis.taxonomy.categoryKey === "gun") {
+    if (statistic == null) {
+      return {
+        passed: false,
+        summary: "枪皮缺少存世量数据",
+        reasons: ["当前枪皮还没拿到稳定存世量，先不放入自主推荐池。"],
+      };
+    }
+
+    if (statistic < 5_000 || statistic > 30_000) {
+      return {
+        passed: false,
+        summary: "枪皮存世量不在 5000-30000 区间",
+        reasons: ["当前存世量 " + formatCount(statistic) + "，未落在你指定的枪皮观察区间。"],
+      };
+    }
+
+    return {
+      passed: true,
+      summary: "枪皮存世量命中目标区间",
+      reasons: ["当前存世量 " + formatCount(statistic) + "，处于 5000-30000 的观察区间。"],
+    };
+  }
+
+  if (analysis.taxonomy.categoryKey === "glove") {
+    if (statistic == null) {
+      return {
+        passed: false,
+        summary: "手套缺少存世量数据",
+        reasons: ["当前手套还没拿到稳定存世量，先不放入自主推荐池。"],
+      };
+    }
+
+    if (statistic < 2_000 || statistic > 7_000) {
+      return {
+        passed: false,
+        summary: "手套存世量不在 2000-7000 区间",
+        reasons: ["当前存世量 " + formatCount(statistic) + "，未落在你指定的手套观察区间。"],
+      };
+    }
+
+    return {
+      passed: true,
+      summary: "手套存世量命中目标区间",
+      reasons: ["当前存世量 " + formatCount(statistic) + "，处于 2000-7000 的观察区间。"],
+    };
+  }
+
+  if (analysis.taxonomy.categoryKey === "agent") {
+    return {
+      passed: true,
+      summary: "探员板块直接纳入自主推荐池",
+      reasons: ["当前标的是探员题材，按规则直接进入自主推荐池。"],
+    };
+  }
+
+  return {
+    passed: false,
+    summary: "当前板块不在自主推荐范围",
+    reasons: ["当前仅纳入枪皮、手套、探员和全息战队贴纸。"],
+  };
+}
+
+export function isAutonomousRecommendationEligible(analysis: AnalysisResponse) {
+  return evaluateAutonomousRecommendationEligibility(analysis).passed;
+}
+
+function buildBottomReversalSignal({
+  itemName,
+  taxonomy,
+  currentStatistic,
+  closes,
+  macd,
+}: {
+  itemName: string;
+  taxonomy: BoardTaxonomy;
+  currentStatistic: number | null;
+  closes: number[];
+  macd: ReturnType<typeof calcMacd>;
+}): BottomReversalSignal {
+  const nameText = normalizeItemText(itemName);
+  const eligibleBoard =
+    (taxonomy.categoryKey === "gun" &&
+      currentStatistic != null &&
+      currentStatistic >= 5_000 &&
+      currentStatistic <= 30_000) ||
+    (taxonomy.categoryKey === "glove" &&
+      currentStatistic != null &&
+      currentStatistic >= 2_000 &&
+      currentStatistic <= 7_000) ||
+    taxonomy.categoryKey === "agent" ||
+    (taxonomy.categoryKey === "sticker" && isHoloStickerName(nameText) && isLikelyTeamSticker(nameText));
+
+  const latestIndex = macd.dif.length - 1;
+  if (!eligibleBoard || latestIndex < 8 || closes.length < 12) {
+    return {
+      triggered: false,
+      score: 0,
+      title: itemName + " 未触发底部蓄势预警",
+      detail: "当前样本量不足，或板块不在底部反转策略的观察范围内。",
+      overlapDays: 0,
+      shrinkDays: 0,
+      recentLowDays: 0,
+    };
+  }
+
+  const macdGapSeries = macd.dif.map((value, index) => Math.abs(value - macd.dea[index]!));
+  const gapThreshold = Math.max(0.05, Number((average(macdGapSeries.slice(-12)) * 0.8).toFixed(4)));
+  const overlapDays = countConsecutiveFromEnd(
+    macdGapSeries,
+    (_gap, index) =>
+      (macd.dif[index] ?? 0) < 0 &&
+      (macd.dea[index] ?? 0) < 0 &&
+      Math.abs((macd.dif[index] ?? 0) - (macd.dea[index] ?? 0)) <= gapThreshold,
+  );
+
+  let crossSwitches = 0;
+  const startIndex = Math.max(1, macd.dif.length - overlapDays);
+  for (let index = startIndex; index < macd.dif.length; index += 1) {
+    const prevGap = macd.dif[index - 1]! - macd.dea[index - 1]!;
+    const currentGap = macd.dif[index]! - macd.dea[index]!;
+    if (Math.sign(prevGap) !== 0 && Math.sign(currentGap) !== 0 && Math.sign(prevGap) !== Math.sign(currentGap)) {
+      crossSwitches += 1;
+    }
+  }
+
+  const shrinkDays = countConsecutiveFromEnd(
+    macd.hist,
+    (value, index, values) =>
+      value < 0 &&
+      (index === 0 || (values[index - 1]! < 0 && Math.abs(value) <= Math.abs(values[index - 1]!) + 0.02)),
+  );
+
+  const recentWindow = closes.slice(-12);
+  const priorWindow = recentWindow.slice(0, -4);
+  const tailWindow = recentWindow.slice(-4);
+  const priorLow = priorWindow.length ? Math.min(...priorWindow) : recentWindow[0]!;
+  const tailLow = tailWindow.length ? Math.min(...tailWindow) : recentWindow.at(-1)!;
+  const latestClose = recentWindow.at(-1)!;
+  const notNewLow = tailLow >= priorLow * 0.998 && latestClose >= priorLow * 1.005;
+
+  const difBelowZero = (macd.dif.at(-1) ?? 0) < 0;
+  const deaBelowZero = (macd.dea.at(-1) ?? 0) < 0;
+  const triggered =
+    difBelowZero &&
+    deaBelowZero &&
+    overlapDays >= 6 &&
+    crossSwitches >= 1 &&
+    notNewLow &&
+    shrinkDays >= 4;
+
+  const score = Math.round(
+    clamp(42 + overlapDays * 5 + shrinkDays * 4 + (notNewLow ? 12 : -10) + crossSwitches * 6, 0, 100),
+  );
+
+  return {
+    triggered,
+    score,
+    title: triggered ? itemName + " 底部蓄势即将向上反转预警" : itemName + " 未触发底部蓄势预警",
+    detail: triggered
+      ? "MACD 双线在零轴下方粘合 " + overlapDays + " 天，绿柱连续缩短 " + shrinkDays + " 天，最近价格未再创近期新低，已满足底部蓄势反转条件。"
+      : "当前仅满足部分条件：双线粘合 " + overlapDays + " 天、绿柱缩短 " + shrinkDays + " 天，" + (notNewLow ? "价格已止跌。" : "价格仍可能探新低。"),
+    overlapDays,
+    shrinkDays,
+    recentLowDays: 4,
+  };
+}
+
 function buildTeamSignal({
   priceTier,
   top5SharePct,
@@ -1035,6 +1385,55 @@ function holderKey(row: { steamId?: string; steamName: string }) {
   return (row.steamId?.trim() || row.steamName.trim()).toLowerCase();
 }
 
+function dedupeHolderRows(rows: HolderRow[]) {
+  const merged = new Map<
+    string,
+    HolderRow & {
+      order: number;
+    }
+  >();
+
+  rows.forEach((row, index) => {
+    const key = holderKey(row);
+    if (!key) {
+      return;
+    }
+
+    const current = merged.get(key);
+    if (!current) {
+      merged.set(key, {
+        ...row,
+        steamName: row.steamName.trim() || "未知持仓",
+        order: index,
+      });
+      return;
+    }
+
+    const nextName = row.steamName.trim();
+    const currentName = current.steamName.trim();
+    const shouldReplaceName =
+      Boolean(nextName) &&
+      (!currentName ||
+        currentName === "未知持仓" ||
+        currentName === "< blank >" ||
+        nextName.length > currentName.length);
+
+    merged.set(key, {
+      ...current,
+      id: current.id ?? row.id,
+      steamId: current.steamId ?? row.steamId,
+      avatar: current.avatar ?? row.avatar,
+      steamName: shouldReplaceName ? nextName : current.steamName,
+      num: Math.max(current.num, row.num),
+      order: Math.min(current.order, index),
+    });
+  });
+
+  return [...merged.values()]
+    .sort((left, right) => right.num - left.num || left.order - right.order)
+    .map(({ order: _order, ...row }) => row);
+}
+
 function findSnapshotHoursAgo(history: Snapshot[], currentAt: string, hoursAgo: number) {
   const target = Date.parse(currentAt) - hoursAgo * 60 * 60 * 1000;
   return [...history].reverse().find((row) => Date.parse(row.at) <= target && row.leaders?.length);
@@ -1085,6 +1484,7 @@ function buildHolderLeaderInsights({
     }
 
     return {
+      taskId: row.id,
       steamId: row.steamId,
       steamName: row.steamName,
       avatar: row.avatar,
@@ -1138,7 +1538,7 @@ function buildLikelyMotives({
   }
 
   if ((change7d ?? 0) >= -2 && (change7d ?? 0) <= 6 && volumeSpike >= 0.9 && volumeSpike <= 1.5) {
-    motives.push("价格只是在缓慢抬头，节奏更像提前试仓而不是情绪化拉升");
+    motives.push("价格只是缓慢抬头，节奏更像提前试仓而不是情绪化拉升");
   }
 
   if (taxonomy.categoryKey === "sticker") {
@@ -1219,9 +1619,9 @@ function buildEarlyAccumulationSignal({
     return {
       state: "early_build",
       score,
-      title: `${itemName} 疑似提前建仓`,
+      title: itemName + " 疑似提前建仓",
       detail:
-        "目前主要是少数席位在抬升仓位，价格还只是轻微上拱，尚未进入暴力拉升阶段，适合列入优先观察清单。",
+        "目前主要是少数席位在抬升仓位，价格还只是轻微上拐，尚未进入暴力拉升阶段，适合列入优先观察名单。",
       detectedBuilders: builders.length,
       totalTrackedSharePct: Number(builderShare.toFixed(2)),
       likelyMotives,
@@ -1232,7 +1632,7 @@ function buildEarlyAccumulationSignal({
     return {
       state: "crowded_breakout",
       score,
-      title: `${itemName} 资金已被市场看见`,
+      title: itemName + " 资金已被市场看见",
       detail:
         "持仓席位仍在集中，但价格已经明显抬升，后续更像突破跟随而不是提前潜伏，追价风险会更高。",
       detectedBuilders: builders.length,
@@ -1241,12 +1641,12 @@ function buildEarlyAccumulationSignal({
     };
   }
 
-  if (builders.length >= 1 || score >= 58 || (entryScore >= 65 && dumpRiskScore <= 55)) {
+  if (builders.length >= 1 || score >= 58 || (entryScore >= 45 && dumpRiskScore <= 20)) {
     return {
       state: "watch",
       score,
-      title: `${itemName} 建仓观察中`,
-      detail: "已经能看到部分席位试探性加仓，但强度还不够，建议继续等 1 至 2 轮快照确认。",
+      title: itemName + " 建仓观察中",
+      detail: "已经能看到部分席位试探性加仓，但强度还不够，建议继续等 1 到 2 轮快照确认。",
       detectedBuilders: builders.length,
       totalTrackedSharePct: Number(builderShare.toFixed(2)),
       likelyMotives,
@@ -1256,7 +1656,7 @@ function buildEarlyAccumulationSignal({
   return {
     state: "none",
     score,
-    title: `${itemName} 暂无提前建仓特征`,
+    title: itemName + " 暂无提前建仓特征",
     detail: "当前还没看到足够明确的少数席位集中吸筹行为，先以常规量价观察为主。",
     detectedBuilders: builders.length,
     totalTrackedSharePct: Number(builderShare.toFixed(2)),
@@ -1287,7 +1687,7 @@ function buildStrategyPlan({
   const defensePct = clamp(
     2.8 +
       volatility * 1.2 * priceTier.cooldownWeight +
-      Math.max(0, dumpRiskScore - entryScore) * 0.045 +
+      Math.max(0, dumpRiskScore - entryScore) * 0.015 +
       Math.max(0, teamSignal.exitScore - 60) * 0.035,
     2.8,
     12,
@@ -1295,7 +1695,7 @@ function buildStrategyPlan({
   const targetPct = clamp(
     Math.max(expected7dPct, 1.2) +
       volatility * 0.55 +
-      Math.max(0, scoreGap) * 0.05 +
+      Math.max(0, scoreGap) * 0.015 +
       Math.max(0, teamSignal.buildScore - teamSignal.exitScore) * 0.03,
     1,
     18,
@@ -1317,25 +1717,25 @@ function buildStrategyPlan({
   let positionMaxPct = 10;
   const tierCap = priceTier.key === "mid" ? 28 : priceTier.key === "low" ? 20 : 18;
 
-  if (dumpRiskScore >= 78) {
+  if (dumpRiskScore >= 120) {
     tone = "risk";
     action = "减仓避险";
     actionSummary = "价格、盘口和筹码同时偏弱，7 天锁仓期内容易承受被动回撤。";
     positionMinPct = 0;
     positionMaxPct = Math.min(8, tierCap);
-  } else if (entryScore >= 78 && cooldownRiskPct <= 45) {
+  } else if (entryScore >= 120 && cooldownRiskPct <= 45) {
     tone = "entry";
     action = "分批建仓";
     actionSummary = "量价、指标与筹码偏多共振，适合分两到三笔逐步建立仓位。";
     positionMinPct = 12;
     positionMaxPct = tierCap;
-  } else if (entryScore >= 62 && scoreGap >= 6) {
+  } else if (entryScore >= 45 && scoreGap >= 18) {
     tone = "entry";
     action = "低位试仓";
     actionSummary = "信号开始转强，但还没到全力推进阶段，适合轻仓试错。";
     positionMinPct = 6;
     positionMaxPct = Math.min(18, tierCap);
-  } else if (dumpRiskScore >= 60) {
+  } else if (dumpRiskScore >= 45) {
     tone = "risk";
     action = "控制仓位";
     actionSummary = "风险侧信号偏多，建议降低仓位，等待卖压和筹码稳定后再看。";
@@ -1387,6 +1787,8 @@ function buildReasoningFactors({
   delta24h,
   priceTier,
   teamSignal,
+  csfloat,
+  bottomReversal,
 }: {
   change7d: number | null;
   change30d: number | null;
@@ -1403,6 +1805,8 @@ function buildReasoningFactors({
   delta24h: TrendDelta | null;
   priceTier: PriceTierProfile;
   teamSignal: TeamSignal;
+  csfloat: CsfloatListingSummary;
+  bottomReversal: BottomReversalSignal;
 }): ReasoningFactor[] {
   const priceSlopeDaily = change7d == null ? null : Number((change7d / 7).toFixed(2));
 
@@ -1499,6 +1903,31 @@ function buildReasoningFactors({
             ? "negative"
             : "neutral",
     },
+    {
+      title: "全球在售样本",
+      value:
+        csfloat.listingCount > 0
+          ? `${csfloat.listingCount} 挂单 / ${csfloat.uniqueSellerCount} 卖家`
+          : "样本不足",
+      detail:
+        csfloat.listingCount > 0
+          ? `公开在售样本中可见 ${csfloat.uniquePaintSeedCount} 个模板，Float 区间 ${
+              csfloat.bestFloat != null ? csfloat.bestFloat.toFixed(4) : "--"
+            } ~ ${csfloat.worstFloat != null ? csfloat.worstFloat.toFixed(4) : "--"}。`
+          : csfloat.limitation,
+      tone:
+        csfloat.listingCount >= 10
+          ? "positive"
+          : csfloat.enabled
+            ? "neutral"
+            : "negative",
+    },
+    {
+      title: "底部蓄势",
+      value: bottomReversal.triggered ? `${bottomReversal.score} 分` : "未触发",
+      detail: bottomReversal.detail,
+      tone: bottomReversal.triggered ? "positive" : "neutral",
+    },
   ];
 }
 
@@ -1516,6 +1945,7 @@ function buildItemAlerts({
   priceTier,
   teamSignal,
   earlyAccumulation,
+  bottomReversal,
 }: {
   change1d: number | null;
   volumeSpike: number;
@@ -1530,6 +1960,7 @@ function buildItemAlerts({
   priceTier: PriceTierProfile;
   teamSignal: TeamSignal;
   earlyAccumulation: EarlyAccumulationSignal;
+  bottomReversal: BottomReversalSignal;
 }): ItemAlert[] {
   const alerts: ItemAlert[] = [];
 
@@ -1576,7 +2007,7 @@ function buildItemAlerts({
     });
   }
 
-  if (cooldownRiskPct >= 65 || dumpRiskScore >= 72) {
+  if (cooldownRiskPct >= 65 || dumpRiskScore >= 120) {
     alerts.push({
       level: "warning",
       title: "锁仓期风险偏高",
@@ -1584,7 +2015,7 @@ function buildItemAlerts({
     });
   }
 
-  if (teamSignal.buildScore >= 72) {
+  if (teamSignal.buildScore >= 72 || entryScore >= 110) {
     alerts.push({
       level: "entry",
       title: "团队建仓评分抬升",
@@ -1606,7 +2037,15 @@ function buildItemAlerts({
     });
   }
 
-  if (teamSignal.exitScore >= 72) {
+  if (bottomReversal.triggered) {
+    alerts.push({
+      level: "entry",
+      title: "底部蓄势即将向上反转",
+      detail: bottomReversal.detail,
+    });
+  }
+
+  if (teamSignal.exitScore >= 72 || dumpRiskScore >= 110) {
     alerts.push({
       level: "risk",
       title: "团队撤退评分抬升",
@@ -1614,7 +2053,7 @@ function buildItemAlerts({
     });
   }
 
-  if (!alerts.length && entryScore < 70 && dumpRiskScore < 70) {
+  if (!alerts.length && entryScore < 45 && dumpRiskScore < 45) {
     alerts.push({
       level: "warning",
       title: "当前无强触发",
@@ -1660,30 +2099,40 @@ function createSummary({
   };
 }
 
-export function buildRecommendationCard(analysis: AnalysisResponse): RecommendationCard {
-  let recommendationType: RecommendationCard["recommendationType"] = "trend_follow";
-  let score = Math.max(
-    analysis.earlyAccumulation.score,
-    analysis.scores.entryScore,
-    analysis.marketContext.teamSignal.buildScore,
-  );
-  let reason = analysis.strategy.actionSummary;
+export function buildRecommendationCard(analysis: AnalysisResponse): RecommendationCard | null {
+  const eligibility = evaluateAutonomousRecommendationEligibility(analysis);
+  if (!eligibility.passed) {
+    return null;
+  }
 
-  if (analysis.earlyAccumulation.state === "early_build") {
+  let recommendationType: RecommendationCard["recommendationType"] = "trend_follow";
+  let score = analysis.scores.entryScore;
+  let reason = analysis.strategy.actionSummary;
+  const triggerTags: string[] = [];
+
+  if (analysis.bottomReversal.triggered) {
+    recommendationType = "bottom_reversal";
+    score = Math.max(score, analysis.scores.entryScore + 14, analysis.bottomReversal.score * 1.6);
+    reason = analysis.bottomReversal.detail;
+    triggerTags.push("底部蓄势反转");
+  } else if (analysis.earlyAccumulation.state === "early_build") {
     recommendationType = "early_build";
-    score = Math.max(score, analysis.earlyAccumulation.score + 6);
+    score = Math.max(score, analysis.scores.entryScore + 12);
     reason = analysis.earlyAccumulation.detail;
+    triggerTags.push("少数席位提前建仓");
   } else if (
     analysis.taxonomy.categoryKey === "sticker" &&
-    analysis.scores.entryScore >= 62 &&
-    analysis.scores.dumpRiskScore <= 58
+    analysis.scores.entryScore >= 45 &&
+    analysis.scores.dumpRiskScore <= 20
   ) {
     recommendationType = "rotation";
     reason = "贴纸题材轮动和仓位集中度正在改善，适合纳入轮动推荐池。";
-  } else if (analysis.scores.dumpRiskScore >= 72) {
+    triggerTags.push("贴纸题材轮动");
+  } else if (analysis.scores.dumpRiskScore >= 110) {
     recommendationType = "risk_avoid";
     score = analysis.scores.dumpRiskScore;
     reason = "风险侧更强，建议优先放进规避清单而不是推荐清单。";
+    triggerTags.push("高风险规避");
   }
 
   const likelyMotives =
@@ -1705,10 +2154,11 @@ export function buildRecommendationCard(analysis: AnalysisResponse): Recommendat
   return {
     goodId: analysis.item.goodId,
     name: analysis.item.name,
+    marketHashName: analysis.item.marketHashName,
     image: analysis.item.image,
     taxonomy: analysis.taxonomy,
     recommendationType,
-    score: Math.round(clamp(score, 0, 100)),
+    score: Number(clamp(score, -200, 200).toFixed(1)),
     reason,
     expected7dPct: analysis.prediction.expected7dPct,
     entryScore: analysis.scores.entryScore,
@@ -1719,19 +2169,34 @@ export function buildRecommendationCard(analysis: AnalysisResponse): Recommendat
     likelyMotives,
     topHolders: analysis.holderInsights.slice(0, 4),
     dataPoints: uniq([
-      `${analysis.taxonomy.categoryLabel} / ${analysis.taxonomy.segmentLabel}`,
-      `建仓 ${analysis.scores.entryScore}，风险 ${analysis.scores.dumpRiskScore}`,
-      `7 天预期 ${formatSignedPercent(analysis.prediction.expected7dPct, 1)}`,
-      `团队建仓 ${analysis.marketContext.teamSignal.buildScore} / 撤退 ${analysis.marketContext.teamSignal.exitScore}`,
-      analysis.csfloat.listingCount > 0
-        ? `CSFloat 在售 ${analysis.csfloat.listingCount} 条`
+      eligibility.summary,
+      analysis.taxonomy.categoryLabel + " / " + analysis.taxonomy.segmentLabel,
+      "建仓 " + analysis.scores.entryScore + "，风险 " + analysis.scores.dumpRiskScore,
+      "7 天预期 " + formatSignedPercent(analysis.prediction.expected7dPct, 1),
+      "团队建仓 " + analysis.marketContext.teamSignal.buildScore + " / 撤退 " + analysis.marketContext.teamSignal.exitScore,
+      analysis.bottomReversal.triggered
+        ? "底部蓄势 " + analysis.bottomReversal.overlapDays + " 天粘合 / " + analysis.bottomReversal.shrinkDays + " 天缩柱"
         : null,
+      analysis.csfloat.listingCount > 0 ? "CSFloat 在售 " + analysis.csfloat.listingCount + " 条" : null,
+    ]),
+    triggerTags: uniq([
+      ...triggerTags,
+      analysis.earlyAccumulation.state === "watch" ? "提前建仓观察" : null,
     ]),
   };
 }
 
-export function buildRecommendationResponse(analyses: AnalysisResponse[]): RecommendationResponse {
-  const cards = analyses.map((analysis) => buildRecommendationCard(analysis));
+export function buildRecommendationResponse(
+  analyses: AnalysisResponse[],
+  options?: {
+    recommendationLimit?: number;
+    featuredLimit?: number;
+    scanner?: RecommendationResponse["scanner"];
+  },
+): RecommendationResponse {
+  const cards = analyses
+    .map((analysis) => buildRecommendationCard(analysis))
+    .filter((card): card is RecommendationCard => card != null);
   const boardMap = new Map<
     string,
     {
@@ -1742,14 +2207,14 @@ export function buildRecommendationResponse(analyses: AnalysisResponse[]): Recom
     }
   >();
 
-  analyses.forEach((analysis) => {
-    const categoryKey = analysis.taxonomy.categoryKey;
-    const segmentKey = analysis.taxonomy.segmentKey;
+  cards.forEach((card) => {
+    const categoryKey = card.taxonomy.categoryKey;
+    const segmentKey = card.taxonomy.segmentKey;
     const current =
       boardMap.get(categoryKey) ??
       {
         key: categoryKey,
-        label: analysis.taxonomy.categoryLabel,
+        label: card.taxonomy.categoryLabel,
         count: 0,
         segments: new Map<string, { key: string; label: string; count: number }>(),
       };
@@ -1758,7 +2223,7 @@ export function buildRecommendationResponse(analyses: AnalysisResponse[]): Recom
       current.segments.get(segmentKey) ??
       {
         key: segmentKey,
-        label: analysis.taxonomy.segmentLabel,
+        label: card.taxonomy.segmentLabel,
         count: 0,
       };
     segment.count += 1;
@@ -1766,25 +2231,76 @@ export function buildRecommendationResponse(analyses: AnalysisResponse[]): Recom
     boardMap.set(categoryKey, current);
   });
 
+  const recommendationLimit = Math.max(3, options?.recommendationLimit ?? 15);
+  const featuredLimit = Math.max(1, options?.featuredLimit ?? 3);
   const positive = cards
-    .filter((card) => card.recommendationType !== "risk_avoid" && card.score >= 68)
-    .sort((left, right) => right.score - left.score)
-    .slice(0, 8);
+    .filter(
+      (card) =>
+        card.recommendationType !== "risk_avoid" &&
+        (card.entryScore >= 35 || card.recommendationType === "bottom_reversal"),
+    )
+    .sort(
+      (left, right) =>
+        right.entryScore - left.entryScore ||
+        right.score - left.score ||
+        left.dumpRiskScore - right.dumpRiskScore,
+    )
+    .slice(0, recommendationLimit);
   const watch = cards
-    .filter((card) => card.recommendationType !== "risk_avoid" && card.score >= 55 && card.score < 68)
-    .sort((left, right) => right.score - left.score)
-    .slice(0, 8);
+    .filter(
+      (card) =>
+        card.recommendationType !== "risk_avoid" &&
+        card.entryScore >= 0 &&
+        card.entryScore < 35 &&
+        card.dumpRiskScore < 90,
+    )
+    .sort(
+      (left, right) =>
+        right.entryScore - left.entryScore ||
+        right.score - left.score ||
+        left.dumpRiskScore - right.dumpRiskScore,
+    )
+    .slice(0, recommendationLimit);
   const risk = cards
-    .filter((card) => card.recommendationType === "risk_avoid" || card.dumpRiskScore >= 68)
-    .sort((left, right) => right.dumpRiskScore - left.dumpRiskScore)
-    .slice(0, 8);
+    .filter((card) => card.recommendationType === "risk_avoid" || card.dumpRiskScore >= 90)
+    .sort((left, right) => right.dumpRiskScore - left.dumpRiskScore || right.score - left.score)
+    .slice(0, recommendationLimit);
+  const featured = positive.slice(0, featuredLimit);
 
   return {
     updatedAt: new Date().toISOString(),
-    universeCount: analyses.length,
+    universeCount: cards.length,
+    featured,
     positive,
     watch,
     risk,
+    scanner:
+      options?.scanner ??
+      {
+        source: "watchlist",
+        candidatePages: 0,
+        candidatePageSize: 0,
+        scannedCandidateCount: cards.length,
+        deepAnalyzedCount: cards.length,
+        recommendationLimit,
+        featuredLimit,
+        sortBy: "建仓推荐评分降序",
+        hotWindowSize: 20,
+        randomSampleSize: 10,
+        windowRangeStart: 1,
+        windowRangeEnd: 20,
+        poolSize: cards.length,
+        completedRoundsInCycle: 0,
+        totalRoundsCompleted: 0,
+        roundsRemaining: 15,
+        maxRoundsPerCycle: 15,
+        paused: false,
+        autofilling: false,
+        minimumTargetCount: 3,
+        lastRoundAt: null,
+        lastBatchCandidates: [],
+        fallbackSource: null,
+      },
     boards: [...boardMap.values()]
       .sort((left, right) => right.count - left.count)
       .map((entry) => ({
@@ -1796,21 +2312,80 @@ export function buildRecommendationResponse(analyses: AnalysisResponse[]): Recom
   };
 }
 
-function fillCloseFromMap(
+function fillCloseFromSeries(
   timeline: ChartCandle[],
-  platformMap: Map<number, ChartCandle>,
+  platformSeries: ChartCandle[],
 ) {
   let lastValue: number | null = null;
+  let platformIndex = 0;
 
   return timeline.map((candle) => {
-    const matched = platformMap.get(candle.t);
-    if (matched) {
-      lastValue = matched.c;
-      return matched.c;
+    while (
+      platformIndex < platformSeries.length &&
+      platformSeries[platformIndex]!.t <= candle.t
+    ) {
+      lastValue = platformSeries[platformIndex]!.c;
+      platformIndex += 1;
     }
 
     return lastValue;
   });
+}
+
+function upsertLatestQuoteCandle(
+  candles: ChartCandle[],
+  updatedAt: string | null,
+  price: number | null,
+  depth: number | null,
+) {
+  if (price == null || !Number.isFinite(price) || price <= 0) {
+    return candles;
+  }
+
+  const next = candles.map((candle) => ({ ...candle }));
+  const timestamp = updatedAt ? Date.parse(updatedAt) : Number.NaN;
+  const hasTimestamp = Number.isFinite(timestamp) && timestamp > 0;
+  const depthValue = depth != null && Number.isFinite(depth) ? Math.max(0, depth) : 0;
+
+  if (next.length === 0) {
+    if (!hasTimestamp) {
+      return next;
+    }
+
+    return [
+      {
+        t: timestamp,
+        o: price,
+        c: price,
+        h: price,
+        l: price,
+        v: depthValue,
+      },
+    ];
+  }
+
+  const last = next.at(-1)!;
+  if (!hasTimestamp || timestamp <= last.t) {
+    next[next.length - 1] = {
+      ...last,
+      c: price,
+      h: Math.max(last.h, last.o, price),
+      l: Math.min(last.l, last.o, price),
+      v: depthValue || last.v,
+    };
+    return next;
+  }
+
+  next.push({
+    t: timestamp,
+    o: last.c,
+    c: price,
+    h: Math.max(last.c, price),
+    l: Math.min(last.c, price),
+    v: depthValue || last.v,
+  });
+
+  return next;
 }
 
 function closestPlatformByPrice(
@@ -1927,13 +2502,18 @@ type AnalyzeOptions = {
 function buildEmptyCsfloatSummary(marketHashName: string | null): CsfloatListingSummary {
   return {
     enabled: false,
-    source: "CSFloat Market",
+    source: "CSFloat Active Listings",
     marketHashName,
     listingCount: 0,
+    uniqueSellerCount: 0,
+    publicSellerCount: 0,
+    uniquePaintSeedCount: 0,
     lowestPrice: null,
     highestPrice: null,
     bestFloat: null,
+    worstFloat: null,
     limitation: "尚未接入 CSFloat 补充数据。",
+    sellerClusters: [],
     samples: [],
   };
 }
@@ -2031,6 +2611,46 @@ export async function analyzeItem(
 ): Promise<AnalysisResponse> {
   const detailRaw = await client.getGoodById(goodId);
   const detail = normalizeDetail(detailRaw, goodId);
+  detail.marketHashName =
+    pickString(
+      detailRaw,
+      ["goods_info.market_hash_name", "market_hash_name", "goods_market_hash_name"],
+      [["goods", "info", "market", "hash", "name"], ["goods", "market", "hash", "name"]],
+    ) ?? detail.marketHashName;
+  detail.name =
+    pickString(detailRaw, ["goods_info.name", "goods_name", "name"], [["goods", "info", "name"]]) ??
+    detail.marketHashName ??
+    detail.name;
+  detail.image =
+    pickString(
+      detailRaw,
+      ["goods_info.img", "img", "icon", "image"],
+      [["goods", "info", "img"], ["icon"], ["image"]],
+    ) ?? detail.image;
+  detail.rarity =
+    pickString(
+      detailRaw,
+      [
+        "goods_info.rarity_localized_name",
+        "rarity_localized_name",
+        "rare_name",
+        "rarity",
+        "quality_name",
+      ],
+      [["goods", "info", "rarity", "localized", "name"], ["rare"], ["quality"]],
+    ) ?? detail.rarity;
+  detail.weapon =
+    pickString(
+      detailRaw,
+      ["goods_info.type_localized_name", "type_localized_name", "weapon_name", "category_name"],
+      [["goods", "info", "type", "localized", "name"], ["weapon"], ["category"]],
+    ) ?? detail.weapon;
+  detail.exterior =
+    pickString(
+      detailRaw,
+      ["goods_info.exterior_localized_name", "exterior_localized_name", "exterior_name", "wear_name"],
+      [["goods", "info", "exterior", "localized", "name"], ["wear"], ["exterior"]],
+    ) ?? detail.exterior;
   const platformInfo = await resolvePlatforms(
     client,
     goodId,
@@ -2039,16 +2659,24 @@ export async function analyzeItem(
     options.persistPlatformMap,
   );
 
-  const buffCandles = platformInfo.buffCandles;
-  const yyypCandles = platformInfo.yyypCandles;
+  const buffCandles = upsertLatestQuoteCandle(
+    platformInfo.buffCandles,
+    detail.updatedAt,
+    detail.buffPrice,
+    detail.buffSell,
+  );
+  const yyypCandles = upsertLatestQuoteCandle(
+    platformInfo.yyypCandles,
+    detail.updatedAt,
+    detail.yyypPrice,
+    detail.yyypSell,
+  );
   const primary = buffCandles.length >= yyypCandles.length ? buffCandles : yyypCandles;
   const secondary = primary === buffCandles ? yyypCandles : buffCandles;
   const secondaryMap = new Map(secondary.map((row) => [row.t, row]));
 
-  const buffMap = new Map(buffCandles.map((row) => [row.t, row]));
-  const yyypMap = new Map(yyypCandles.map((row) => [row.t, row]));
-  const buffClose = fillCloseFromMap(primary, buffMap);
-  const yyypClose = fillCloseFromMap(primary, yyypMap);
+  const buffClose = fillCloseFromSeries(primary, buffCandles);
+  const yyypClose = fillCloseFromSeries(primary, yyypCandles);
   const blendClose = primary.map((row, index) => {
     const values = [buffClose[index], yyypClose[index]].filter(
       (value): value is number => value != null,
@@ -2071,8 +2699,8 @@ export async function analyzeItem(
   const latestBlend = blendClose[latestIndex] ?? null;
   const priceTier = resolvePriceTier(latestBlend);
   const taxonomy = buildTaxonomy(detail, latestBlend);
-  const latestBuff = buffClose[latestIndex] ?? detail.buffPrice;
-  const latestYyyp = yyypClose[latestIndex] ?? detail.yyypPrice;
+  const latestBuff = detail.buffPrice ?? buffClose[latestIndex];
+  const latestYyyp = detail.yyypPrice ?? yyypClose[latestIndex];
   const change7d =
     latestIndex >= 7 ? percentageChange(latestBlend, blendClose[latestIndex - 7]) : null;
   const change30d =
@@ -2101,7 +2729,7 @@ export async function analyzeItem(
 
   let holders: HolderRow[] = [];
   if (options.includeHolders) {
-    holders = await fetchHoldersSafely(client, goodId);
+    holders = dedupeHolderRows(await fetchHoldersSafely(client, goodId));
   }
 
   const top1 = holders[0]?.num ?? null;
@@ -2165,123 +2793,254 @@ export async function analyzeItem(
     spreadPct,
   });
   let earlyAccumulation: EarlyAccumulationSignal;
+  let bottomReversal: BottomReversalSignal;
   const csfloat =
     options.includeHolders && options.getCsfloatListingSummary
       ? await options.getCsfloatListingSummary(detail.marketHashName)
       : buildEmptyCsfloatSummary(detail.marketHashName);
 
-  let entryScore = 42;
-  let dumpRiskScore = 26;
-  const entryReasons: string[] = [];
-  const dumpReasons: string[] = [];
+  let entryScore = 34;
+  let dumpRiskScore = 22;
+  const entryDrivers: ScoreDriver[] = [];
+  const dumpDrivers: ScoreDriver[] = [];
+  const latestMacdHist = macd.hist.at(-1) ?? 0;
+  const previousMacdHist = macd.hist.at(-2) ?? latestMacdHist;
+  const macdMomentum = latestMacdHist - previousMacdHist;
+  const latestJ = kdj.j.at(-1) ?? 50;
 
   if (macdSignal.signal === "buy") {
-    entryScore += 14;
-    entryReasons.push(macdSignal.summary);
+    entryScore += recordScoreDriver(
+      entryDrivers,
+      "MACD 动能",
+      6 + clamp(Math.abs(latestMacdHist) * 0.8 + Math.max(0, macdMomentum) * 1.6, 0, 8),
+      macdSignal.summary,
+      "positive",
+    );
   } else {
-    dumpRiskScore += 12;
-    dumpReasons.push(macdSignal.summary);
+    dumpRiskScore += recordScoreDriver(
+      dumpDrivers,
+      "MACD 动能",
+      6 + clamp(Math.abs(latestMacdHist) * 0.8 + Math.max(0, -macdMomentum) * 1.6, 0, 8),
+      macdSignal.summary,
+      "negative",
+    );
   }
 
   if (kdjSignal.signal === "buy") {
-    entryScore += 10;
-    entryReasons.push(kdjSignal.summary);
+    entryScore += recordScoreDriver(
+      entryDrivers,
+      "KDJ 位置",
+      4 + clamp((50 - latestJ) * 0.14, 0, 6),
+      `${kdjSignal.summary}，J 值 ${latestJ.toFixed(1)}`,
+      "positive",
+    );
   } else if (kdjSignal.signal === "sell") {
-    dumpRiskScore += 8;
-    dumpReasons.push(kdjSignal.summary);
+    dumpRiskScore += recordScoreDriver(
+      dumpDrivers,
+      "KDJ 位置",
+      4 + clamp((latestJ - 50) * 0.14, 0, 6),
+      `${kdjSignal.summary}，J 值 ${latestJ.toFixed(1)}`,
+      "negative",
+    );
   }
 
-  if ((change7d ?? 0) > 3 && (change30d ?? 0) < 18) {
-    entryScore += 11;
-    entryReasons.push(`近 7 天涨幅 ${(change7d ?? 0).toFixed(1)}%，趋势正在抬升`);
+  if ((change7d ?? 0) > 0) {
+    entryScore += recordScoreDriver(
+      entryDrivers,
+      "近 7 天趋势",
+      clamp((change7d ?? 0) * 1.2, 0, 12),
+      `近 7 天涨幅 ${(change7d ?? 0).toFixed(1)}%，近 30 天 ${formatSignedPercent(change30d, 1)}`,
+      "positive",
+    );
+  } else if ((change7d ?? 0) < 0) {
+    dumpRiskScore += recordScoreDriver(
+      dumpDrivers,
+      "近 7 天趋势",
+      clamp(Math.abs(change7d ?? 0) * 1.45, 0, 16),
+      `近 7 天跌幅 ${(change7d ?? 0).toFixed(1)}%，短线承压正在放大`,
+      "negative",
+    );
   }
 
-  if ((change7d ?? 0) < -(priceTier.dangerDropThresholdPct * 1.6)) {
-    dumpRiskScore += 16;
-    dumpReasons.push(`近 7 天跌幅 ${(change7d ?? 0).toFixed(1)}%，短线承压明显`);
+  if (volumeSpike >= priceTier.buildVolumeThreshold) {
+    if ((change1d ?? 0) >= 0) {
+      entryScore += recordScoreDriver(
+        entryDrivers,
+        "量能放大",
+        clamp((volumeSpike - 1) * 12, 2, 12),
+        `放量 ${volumeSpike.toFixed(2)}x，且 1 日变动 ${formatSignedPercent(change1d, 1)}`,
+        "positive",
+      );
+    } else {
+      dumpRiskScore += recordScoreDriver(
+        dumpDrivers,
+        "量能放大",
+        clamp((volumeSpike - 1) * 13, 2, 14),
+        `放量 ${volumeSpike.toFixed(2)}x，但 1 日变动 ${formatSignedPercent(change1d, 1)}，疑似加速出货`,
+        "negative",
+      );
+    }
   }
 
-  if (
-    (change1d ?? 0) <= -priceTier.dangerDropThresholdPct * 0.7 &&
-    volumeSpike >= priceTier.buildVolumeThreshold
-  ) {
-    dumpRiskScore += 14;
-    dumpReasons.push(`放量下跌 ${volumeSpike}x，疑似加速出货`);
+  if ((spreadPct ?? 0) <= 0) {
+    entryScore += recordScoreDriver(
+      entryDrivers,
+      "平台价差",
+      clamp(Math.abs(spreadPct ?? 0) * 1.8, 0, 7),
+      "悠悠有品价格低于 BUFF，存在跨平台价差缓冲",
+      "positive",
+    );
+  } else {
+    dumpRiskScore += recordScoreDriver(
+      dumpDrivers,
+      "平台价差",
+      clamp((spreadPct ?? 0) * 1.6, 0, 7),
+      "BUFF 溢价扩张，跨平台价格正在分化",
+      "negative",
+    );
   }
 
-  if (
-    (change1d ?? 0) >= Math.max(1.2, priceTier.dangerDropThresholdPct * 0.45) &&
-    volumeSpike >= priceTier.buildVolumeThreshold
-  ) {
-    entryScore += 9;
-    entryReasons.push(`放量上攻 ${volumeSpike}x，可能出现主动建仓`);
+  if (sellPressure < 1.15) {
+    entryScore += recordScoreDriver(
+      entryDrivers,
+      "盘口承接",
+      clamp((1.2 - sellPressure) * 10, 0, 6),
+      `在售/求购比 ${sellPressure.toFixed(2)}，承接相对健康`,
+      "positive",
+    );
+  } else if (sellPressure > 1.35) {
+    dumpRiskScore += recordScoreDriver(
+      dumpDrivers,
+      "盘口卖压",
+      clamp((sellPressure - 1.2) * 8, 0, 12),
+      `在售/求购比 ${sellPressure.toFixed(2)}，卖压明显偏大`,
+      "negative",
+    );
   }
 
-  if ((spreadPct ?? 0) <= -(priceTier.spreadRiskThresholdPct * 0.55)) {
-    entryScore += 6;
-    entryReasons.push("悠悠有品价格低于 BUFF，存在跨平台价差缓冲");
+  if ((delta24h?.changePct ?? 0) > 0) {
+    entryScore += recordScoreDriver(
+      entryDrivers,
+      "Top10 24h 变化",
+      clamp((delta24h?.changePct ?? 0) * 0.9, 0, 11),
+      `Top10 持仓 24h 增加 ${(delta24h?.changePct ?? 0).toFixed(1)}%`,
+      "positive",
+    );
+  } else if ((delta24h?.changePct ?? 0) < 0) {
+    dumpRiskScore += recordScoreDriver(
+      dumpDrivers,
+      "Top10 24h 变化",
+      clamp(Math.abs(delta24h?.changePct ?? 0) * 1.05, 0, 12),
+      `Top10 持仓 24h 减少 ${(delta24h?.changePct ?? 0).toFixed(1)}%`,
+      "negative",
+    );
   }
 
-  if ((spreadPct ?? 0) >= priceTier.spreadRiskThresholdPct) {
-    dumpRiskScore += 5;
-    dumpReasons.push("BUFF 溢价明显扩张，跨平台价格开始分化");
+  if ((delta7d?.changePct ?? 0) > 0) {
+    entryScore += recordScoreDriver(
+      entryDrivers,
+      "Top10 7d 趋势",
+      clamp((delta7d?.changePct ?? 0) * 0.55, 0, 9),
+      `Top10 持仓 7d 累积增加 ${(delta7d?.changePct ?? 0).toFixed(1)}%`,
+      "positive",
+    );
+  } else if ((delta7d?.changePct ?? 0) < 0) {
+    dumpRiskScore += recordScoreDriver(
+      dumpDrivers,
+      "Top10 7d 趋势",
+      clamp(Math.abs(delta7d?.changePct ?? 0) * 0.65, 0, 10),
+      `Top10 持仓 7d 累积下降 ${(delta7d?.changePct ?? 0).toFixed(1)}%`,
+      "negative",
+    );
   }
 
-  if (sellPressure > 2.2) {
-    dumpRiskScore += 12;
-    dumpReasons.push(`在售/求购比 ${sellPressure.toFixed(2)}，卖压明显偏大`);
-  } else if (sellPressure < 1.1) {
-    entryScore += 6;
-    entryReasons.push(`在售/求购比 ${sellPressure.toFixed(2)}，承接相对健康`);
+  if ((statisticChange14d ?? 0) < 0) {
+    entryScore += recordScoreDriver(
+      entryDrivers,
+      "存世量变化",
+      clamp(Math.abs(statisticChange14d ?? 0) * 1.9, 0, 6),
+      `近 14 天存世量收缩 ${(statisticChange14d ?? 0).toFixed(2)}%，供给压力在下降`,
+      "positive",
+    );
+  } else if ((statisticChange14d ?? 0) > 0) {
+    dumpRiskScore += recordScoreDriver(
+      dumpDrivers,
+      "存世量变化",
+      clamp((statisticChange14d ?? 0) * 1.35, 0, 8),
+      `近 14 天存世量扩张 ${(statisticChange14d ?? 0).toFixed(2)}%，供给上升会压制弹性`,
+      "negative",
+    );
   }
 
-  if ((delta24h?.changePct ?? 0) > 4) {
-    entryScore += 10;
-    entryReasons.push(`Top10 持仓 24h 增加 ${(delta24h?.changePct ?? 0).toFixed(1)}%`);
+  if ((top10SharePct ?? 0) >= 1) {
+    entryScore += recordScoreDriver(
+      entryDrivers,
+      "筹码集中度",
+      clamp((top10SharePct ?? 0) * 1.8, 0, 5),
+      `Top10 占存世量 ${top10SharePct?.toFixed(2)}%，头部筹码集中度不低`,
+      "positive",
+    );
   }
 
-  if ((delta24h?.changePct ?? 0) < -4) {
-    dumpRiskScore += 12;
-    dumpReasons.push(`Top10 持仓 24h 减少 ${(delta24h?.changePct ?? 0).toFixed(1)}%`);
+  if (teamSignal.buildScore >= 55) {
+    entryScore += recordScoreDriver(
+      entryDrivers,
+      "团队建仓",
+      clamp((teamSignal.buildScore - 52) * 0.34, 0, 16),
+      `团队建仓分 ${teamSignal.buildScore}/100：${teamSignal.summary}`,
+      "positive",
+    );
   }
 
-  if ((delta7d?.changePct ?? 0) > 7) {
-    entryScore += 8;
-    entryReasons.push(`Top10 持仓 7d 累积增加 ${(delta7d?.changePct ?? 0).toFixed(1)}%`);
+  if (teamSignal.exitScore >= 55) {
+    dumpRiskScore += recordScoreDriver(
+      dumpDrivers,
+      "团队撤退",
+      clamp((teamSignal.exitScore - 52) * 0.36, 0, 16),
+      `团队撤退分 ${teamSignal.exitScore}/100：${teamSignal.summary}`,
+      "negative",
+    );
   }
 
-  if ((delta7d?.changePct ?? 0) < -8) {
-    dumpRiskScore += 9;
-    dumpReasons.push(`Top10 持仓 7d 累积下降 ${(delta7d?.changePct ?? 0).toFixed(1)}%`);
+  if (csfloat.uniqueSellerCount > 0) {
+    const liquidityContribution = clamp(csfloat.uniqueSellerCount * 0.35, 0, 4.5);
+    dumpRiskScore += recordScoreDriver(
+      dumpDrivers,
+      "全球在售样本",
+      liquidityContribution,
+      `CSFloat 可见 ${csfloat.listingCount} 条挂单、${csfloat.uniqueSellerCount} 个卖家，全球流动性会增加短线兑现压力`,
+      "neutral",
+    );
   }
 
-  if ((statisticChange14d ?? 0) <= -0.8) {
-    entryScore += 4;
-    entryReasons.push(`近 14 天存世量收缩 ${(statisticChange14d ?? 0).toFixed(2)}%，供给压力在下降`);
+  bottomReversal = buildBottomReversalSignal({
+    itemName: detail.name,
+    taxonomy,
+    currentStatistic,
+    closes: blendClose,
+    macd,
+  });
+
+  if (bottomReversal.triggered) {
+    entryScore += recordScoreDriver(
+      entryDrivers,
+      "底部蓄势",
+      clamp(bottomReversal.score * 0.18, 10, 18),
+      bottomReversal.detail,
+      "positive",
+    );
+    dumpRiskScore = Math.max(0, dumpRiskScore - 4);
   }
 
-  if ((statisticChange14d ?? 0) >= 2.5) {
-    dumpRiskScore += 6;
-    dumpReasons.push(`近 14 天存世量扩张 ${(statisticChange14d ?? 0).toFixed(2)}%，供给上升会压制弹性`);
-  }
+  entryDrivers.sort((left, right) => right.contribution - left.contribution);
+  dumpDrivers.sort((left, right) => right.contribution - left.contribution);
+  const entryReasons = entryDrivers.slice(0, 5).map((driver) => driver.detail);
+  const dumpReasons = dumpDrivers.slice(0, 5).map((driver) => driver.detail);
 
-  if ((top10SharePct ?? 0) >= 1 && (delta24h?.changePct ?? 0) > 4) {
-    entryScore += 4;
-    entryReasons.push(`Top10 占存世量 ${top10SharePct?.toFixed(2)}%，并且 24h 仍在增持`);
-  }
-
-  if (teamSignal.buildScore >= 60) {
-    entryScore += Math.round((teamSignal.buildScore - 55) * 0.28);
-    entryReasons.push(`团队建仓分 ${teamSignal.buildScore}/100：${teamSignal.summary}`);
-  }
-
-  if (teamSignal.exitScore >= 60) {
-    dumpRiskScore += Math.round((teamSignal.exitScore - 55) * 0.3);
-    dumpReasons.push(`团队撤退分 ${teamSignal.exitScore}/100：${teamSignal.summary}`);
-  }
-
-  entryScore = Math.round(clamp(entryScore, 0, 100));
-  dumpRiskScore = Math.round(clamp(dumpRiskScore, 0, 100));
+  const rawEntryScore = normalizeContribution(clamp(entryScore, 0, 100));
+  const rawDumpRiskScore = normalizeContribution(clamp(dumpRiskScore, 0, 100));
+  entryScore = toDirectionalScore(rawEntryScore, rawDumpRiskScore);
+  dumpRiskScore = toDirectionalScore(rawDumpRiskScore, rawEntryScore);
 
   if (!entryReasons.length) {
     entryReasons.push("量价与持仓没有形成明确共振，先以观察为主");
@@ -2312,7 +3071,8 @@ export async function analyzeItem(
     )
     .filter((value): value is number => value != null);
   const volatility = standardDeviation(recentReturns.slice(-20));
-  const bias = (entryScore - dumpRiskScore) / 7;
+  const directionalGap = entryScore - dumpRiskScore;
+  const bias = directionalGap / 18;
   const expected7dPct = Number(
     clamp(
       bias +
@@ -2323,17 +3083,15 @@ export async function analyzeItem(
     ).toFixed(2),
   );
   const confidence = Math.round(
-    clamp(52 + Math.abs(entryScore - dumpRiskScore) * 0.35 + volumeSpike * 4, 45, 89),
+    clamp(52 + Math.abs(directionalGap) * 0.12 + volumeSpike * 4, 45, 92),
   );
   const cooldownRiskPct = Math.round(
     clamp(
-      Math.max(
-        10,
-        dumpRiskScore -
-          entryScore * 0.25 +
-          volatility * 2 +
-          (priceTier.cooldownWeight - 1) * 18,
-      ),
+      45 +
+        dumpRiskScore * 0.28 -
+        entryScore * 0.12 +
+        volatility * 2 +
+        (priceTier.cooldownWeight - 1) * 18,
       10,
       90,
     ),
@@ -2388,6 +3146,8 @@ export async function analyzeItem(
     delta24h,
     priceTier,
     teamSignal,
+    csfloat,
+    bottomReversal,
   });
   const alerts = buildItemAlerts({
     change1d,
@@ -2403,6 +3163,7 @@ export async function analyzeItem(
     priceTier,
     teamSignal,
     earlyAccumulation,
+    bottomReversal,
   });
   const statistic: StatisticSnapshot = {
     current: currentStatistic,
@@ -2411,7 +3172,7 @@ export async function analyzeItem(
     change30d: statisticChange30d,
   };
 
-  const updatedAt = new Date().toISOString();
+  const updatedAt = detail.updatedAt ?? new Date().toISOString();
   const llm =
     options.includeHolders && options.llmClient
       ? await options.llmClient.analyzeItem(
@@ -2516,6 +3277,7 @@ export async function analyzeItem(
     item: {
       goodId,
       name: detail.name,
+      marketHashName: detail.marketHashName,
       image: detail.image,
       rarity: detail.rarity,
       weapon: detail.weapon,
@@ -2525,6 +3287,8 @@ export async function analyzeItem(
       buffClose: latestBuff,
       yyypClose: latestYyyp,
       spreadPct,
+      buffBuyPrice: detail.buffBuyPrice,
+      yyypBuyPrice: detail.yyypBuyPrice,
       buffSell: detail.buffSell,
       yyypSell: detail.yyypSell,
       buffBuy: detail.buffBuy,
@@ -2567,11 +3331,13 @@ export async function analyzeItem(
       entryScore,
       dumpRiskScore,
       entryLabel:
-        entryScore >= 78 ? "偏强建仓" : entryScore >= 62 ? "观察低吸" : "暂缓建仓",
+        entryScore >= 120 ? "偏强建仓" : entryScore >= 45 ? "观察低吸" : "暂缓建仓",
       dumpLabel:
-        dumpRiskScore >= 72 ? "高危跑路" : dumpRiskScore >= 58 ? "筹码松动" : "风险暂稳",
+        dumpRiskScore >= 120 ? "高危跑路" : dumpRiskScore >= 45 ? "筹码松动" : "风险暂稳",
       entryReasons,
       dumpReasons,
+      entryDrivers,
+      dumpDrivers,
     },
     strategy,
     marketContext: {
@@ -2586,6 +3352,7 @@ export async function analyzeItem(
     taxonomy,
     holderInsights,
     earlyAccumulation,
+    bottomReversal,
     csfloat,
     holders: {
       rows: holders.slice(0, 10),

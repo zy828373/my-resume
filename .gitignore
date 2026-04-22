@@ -2,3 +2,10 @@ node_modules
 dist
 data/
 .server-dev.log
+.server-restart.log
+.server-restart.err.log
+test-results/
+head-App.tsx
+labor-contract-reference.docx
+劳动合同（参考版）.docx
+交接文档.md

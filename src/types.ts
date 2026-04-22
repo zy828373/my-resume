@@ -16,6 +16,18 @@ export interface AutoRefreshConfig {
   maxDeepItems: number;
 }
 
+export interface ScannerConfig {
+  enabled: boolean;
+  candidatePages: number;
+  candidatePageSize: number;
+  deepAnalyzeLimit: number;
+  recommendationLimit: number;
+  featuredLimit: number;
+  hotWindowSize: number;
+  randomSampleSize: number;
+  maxRoundsPerCycle: number;
+}
+
 export interface MarketIndex {
   id: number;
   name: string;
@@ -38,6 +50,7 @@ export interface ConfigResponse {
   watchlist: WatchlistEntry[];
   platformMap: PlatformMap | null;
   autoRefresh: AutoRefreshConfig | null;
+  scanner: ScannerConfig | null;
 }
 
 export interface AlertSignal {
@@ -60,6 +73,7 @@ export interface BoardTaxonomy {
 }
 
 export interface HolderBehaviorInsight {
+  taskId?: number;
   steamId?: string;
   steamName: string;
   avatar?: string;
@@ -73,6 +87,13 @@ export interface HolderBehaviorInsight {
   note: string;
 }
 
+export interface ScoreDriver {
+  title: string;
+  contribution: number;
+  detail: string;
+  tone: "positive" | "neutral" | "negative";
+}
+
 export interface EarlyAccumulationSignal {
   state: "none" | "watch" | "early_build" | "crowded_breakout";
   score: number;
@@ -81,6 +102,16 @@ export interface EarlyAccumulationSignal {
   detectedBuilders: number;
   totalTrackedSharePct: number | null;
   likelyMotives: string[];
+}
+
+export interface BottomReversalSignal {
+  triggered: boolean;
+  score: number;
+  title: string;
+  detail: string;
+  overlapDays: number;
+  shrinkDays: number;
+  recentLowDays: number;
 }
 
 export interface WatchlistSummary {
@@ -185,10 +216,22 @@ export interface CsfloatListingSummary {
   source: string;
   marketHashName: string | null;
   listingCount: number;
+  uniqueSellerCount: number;
+  publicSellerCount: number;
+  uniquePaintSeedCount: number;
   lowestPrice: number | null;
   highestPrice: number | null;
   bestFloat: number | null;
+  worstFloat: number | null;
   limitation: string;
+  sellerClusters: Array<{
+    sellerName: string;
+    sellerSteamId: string | null;
+    listingCount: number;
+    lowestPrice: number | null;
+    bestFloat: number | null;
+    paintSeedCount: number;
+  }>;
   samples: Array<{
     listingId: string;
     sellerName: string;
@@ -202,9 +245,15 @@ export interface CsfloatListingSummary {
 export interface RecommendationCard {
   goodId: string;
   name: string;
+  marketHashName: string | null;
   image: string | null;
   taxonomy: BoardTaxonomy;
-  recommendationType: "early_build" | "trend_follow" | "rotation" | "risk_avoid";
+  recommendationType:
+    | "early_build"
+    | "bottom_reversal"
+    | "trend_follow"
+    | "rotation"
+    | "risk_avoid";
   score: number;
   reason: string;
   expected7dPct: number;
@@ -216,14 +265,41 @@ export interface RecommendationCard {
   likelyMotives: string[];
   topHolders: HolderBehaviorInsight[];
   dataPoints: string[];
+  triggerTags: string[];
 }
 
 export interface RecommendationResponse {
   updatedAt: string;
   universeCount: number;
+  featured: RecommendationCard[];
   positive: RecommendationCard[];
   watch: RecommendationCard[];
   risk: RecommendationCard[];
+  scanner: {
+    source: string;
+    candidatePages: number;
+    candidatePageSize: number;
+    scannedCandidateCount: number;
+    deepAnalyzedCount: number;
+    recommendationLimit: number;
+    featuredLimit: number;
+    sortBy: string;
+    hotWindowSize: number;
+    randomSampleSize: number;
+    windowRangeStart: number;
+    windowRangeEnd: number;
+    poolSize: number;
+    completedRoundsInCycle: number;
+    totalRoundsCompleted: number;
+    roundsRemaining: number;
+    maxRoundsPerCycle: number;
+    paused: boolean;
+    autofilling: boolean;
+    minimumTargetCount: number;
+    lastRoundAt: string | null;
+    lastBatchCandidates: string[];
+    fallbackSource: string | null;
+  };
   boards: Array<{
     key: string;
     label: string;
@@ -240,6 +316,7 @@ export interface AnalysisResponse {
   item: {
     goodId: string;
     name: string;
+    marketHashName: string | null;
     image: string | null;
     rarity: string | null;
     weapon: string | null;
@@ -249,6 +326,8 @@ export interface AnalysisResponse {
     buffClose: number | null;
     yyypClose: number | null;
     spreadPct: number | null;
+    buffBuyPrice: number | null;
+    yyypBuyPrice: number | null;
     buffSell: number | null;
     yyypSell: number | null;
     buffBuy: number | null;
@@ -298,6 +377,8 @@ export interface AnalysisResponse {
     dumpLabel: string;
     entryReasons: string[];
     dumpReasons: string[];
+    entryDrivers: ScoreDriver[];
+    dumpDrivers: ScoreDriver[];
   };
   strategy: StrategyPlan;
   marketContext: {
@@ -312,6 +393,7 @@ export interface AnalysisResponse {
   taxonomy: BoardTaxonomy;
   holderInsights: HolderBehaviorInsight[];
   earlyAccumulation: EarlyAccumulationSignal;
+  bottomReversal: BottomReversalSignal;
   csfloat: CsfloatListingSummary;
   holders: {
     rows: Array<{
@@ -340,6 +422,74 @@ export interface AnalysisResponse {
     lastSnapshotAt: string | null;
   };
   summary: WatchlistSummary;
+}
+
+export interface MonitorTaskProfile {
+  taskId: number;
+  steamName: string;
+  steamId: string | null;
+  avatar: string | null;
+  inventoryCount: number | null;
+  visibleAssetCount: number | null;
+  activeDays: number | null;
+  state: number | null;
+  updatedAt: string | null;
+  tradedAt: string | null;
+  inventoryState: number | null;
+  isUser: boolean;
+  isSubscribe: boolean;
+}
+
+export interface MonitorInventoryItem {
+  categoryName: string;
+  price: number | null;
+  marketName: string;
+  tradable: boolean;
+  count: number;
+  createdAt: string | null;
+  iconUrl: string | null;
+  goodId: string | null;
+}
+
+export interface MonitorBusinessItem {
+  goodId: string | null;
+  marketName: string;
+  count: number;
+  iconUrl: string | null;
+  tradable: boolean;
+  type: number | null;
+  createdAt: string | null;
+}
+
+export interface MonitorSnapshotPoint {
+  snapshotId: number;
+  createdAt: string | null;
+}
+
+export interface HolderDrilldownResponse {
+  goodId: string;
+  holder: {
+    taskId: number;
+    steamName: string;
+    steamId: string | null;
+    avatar: string | null;
+    currentNum: number | null;
+    role: HolderBehaviorInsight["role"];
+    note: string;
+    sharePct: number | null;
+    change24hAbs: number | null;
+    change7dAbs: number | null;
+  };
+  profile: MonitorTaskProfile;
+  inventory: {
+    pageIndex: number;
+    pageSize: number;
+    hasMore: boolean;
+    items: MonitorInventoryItem[];
+  };
+  focusActivities: MonitorBusinessItem[];
+  latestActivities: MonitorBusinessItem[];
+  snapshots: MonitorSnapshotPoint[];
 }
 
 export interface SearchSuggestion {
@@ -382,4 +532,34 @@ export interface RefreshRuntimeStatus {
   lastRunDeepCount: number;
   lastRunTriggeredBy: "startup" | "scheduled" | "manual" | null;
   lastError: string | null;
+}
+
+export interface PortfolioHolding {
+  id: string;
+  goodId: string;
+  name: string;
+  averageCost: number;
+  quantity: number;
+  note?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PortfolioAdvice {
+  holdingId: string;
+  goodId: string;
+  name: string;
+  quantity: number;
+  averageCost: number;
+  currentPrice: number | null;
+  costDeviationPct: number | null;
+  unrealizedPnL: number | null;
+  addScore: number;
+  sellScore: number;
+  holdScore: number;
+  action: "add" | "hold" | "reduce" | "exit";
+  summary: string;
+  reasons: string[];
+  riskNotes: string[];
+  analysis: AnalysisResponse;
 }

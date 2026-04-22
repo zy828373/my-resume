@@ -1,7 +1,15 @@
-import type { ChartCandle, HolderRow, MarketIndex } from "./types.js";
+import type {
+  ChartCandle,
+  HolderRow,
+  MarketIndex,
+  MonitorBusinessItem,
+  MonitorInventoryItem,
+  MonitorSnapshotPoint,
+  MonitorTaskProfile,
+} from "./types.js";
 
 const BASE_URL = "https://api.csqaq.com/api/v1";
-const REQUEST_GAP_MS = 1600;
+const REQUEST_GAP_MS = 1200;
 // Follow the same successful public chart mapping used by the previous local project:
 // 1 = BUFF, 2 = 悠悠有品.
 const PLATFORM_CANDIDATES = [1, 2] as const;
@@ -77,10 +85,28 @@ export class CsqaqClient {
         headers.set("ApiToken", token);
       }
 
-      const response = await fetch(`${BASE_URL}${path}`, {
-        ...init,
-        headers,
-      });
+      let response: Response | null = null;
+      let lastFetchError: unknown;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          response = await fetch(`${BASE_URL}${path}`, {
+            ...init,
+            headers,
+          });
+          break;
+        } catch (error) {
+          lastFetchError = error;
+          if (attempt >= 2) {
+            throw error;
+          }
+
+          await sleep(800 * (attempt + 1));
+        }
+      }
+
+      if (!response) {
+        throw lastFetchError instanceof Error ? lastFetchError : new Error("CSQAQ 请求失败");
+      }
 
       const text = await response.text();
       let payload: ApiEnvelope<T> | null = null;
@@ -155,6 +181,58 @@ export class CsqaqClient {
     return (payload.data ?? []).map((row) => ({
       id: String(row.id ?? ""),
       value: String(row.value ?? ""),
+    }));
+  }
+
+  async getPageList(pageIndex = 1, pageSize = 24) {
+    const payload = await this.request<{
+      current_page?: unknown;
+      data?: Array<Record<string, unknown>>;
+    }>("/info/get_page_list", {
+      method: "POST",
+      body: JSON.stringify({
+        page_index: pageIndex,
+        page_size: pageSize,
+        search: "",
+        filter: {},
+      }),
+    });
+
+    return {
+      currentPage: Number(payload.data.current_page ?? pageIndex),
+      items: (payload.data.data ?? []).map((row) => ({
+        id: String(row.id ?? ""),
+        name: String(row.name ?? ""),
+        image: typeof row.img === "string" ? row.img : null,
+        rarity: typeof row.rarity_localized_name === "string" ? row.rarity_localized_name : null,
+        exterior:
+          typeof row.exterior_localized_name === "string" ? row.exterior_localized_name : null,
+        yyypSellPrice: row.yyyp_sell_price == null ? null : Number(row.yyyp_sell_price),
+        yyypSellNum: row.yyyp_sell_num == null ? null : Number(row.yyyp_sell_num),
+      })),
+    };
+  }
+
+  async getPopularGoods() {
+    const payload = await this.request<Array<Record<string, unknown>>>(
+      "/info/get_popular_goods",
+      {
+        method: "POST",
+        body: JSON.stringify({}),
+      },
+    );
+
+    return (payload.data ?? []).map((row) => ({
+      id: String(row.id ?? ""),
+      name: String(row.name ?? ""),
+      marketHashName:
+        typeof row.market_hash_name === "string" ? row.market_hash_name : null,
+      image: typeof row.img === "string" ? row.img : null,
+      rankNum: row.rank_num == null ? null : Number(row.rank_num),
+      rankNumChange:
+        row.rank_num_change == null ? null : Number(row.rank_num_change),
+      turnoverNumber:
+        row.turnover_number == null ? null : Number(row.turnover_number),
     }));
   }
 
@@ -260,6 +338,101 @@ export class CsqaqClient {
       steamId: row.steam_id ? String(row.steam_id) : undefined,
       avatar: row.avatar ? String(row.avatar) : undefined,
       num: Number(row.num ?? 0),
+    }));
+  }
+
+  async getMonitorTaskInfo(taskId: string | number) {
+    const payload = await this.request<{
+      info?: Array<Record<string, unknown>>;
+      is_user?: unknown;
+      is_subscribe?: unknown;
+    }>("/task/get_task_info", {
+      method: "POST",
+      body: JSON.stringify({ task_id: String(taskId) }),
+    });
+
+    const row = payload.data.info?.[0] ?? {};
+    return {
+      taskId: Number(row.id ?? taskId),
+      steamName: String(row.steam_name ?? "未知席位"),
+      steamId: row.steam_id ? String(row.steam_id) : null,
+      avatar: row.avatar ? String(row.avatar) : null,
+      inventoryCount: row.amount == null ? null : Number(row.amount),
+      visibleAssetCount: row.asset_cnt == null ? null : Number(row.asset_cnt),
+      activeDays: row.active_time == null ? null : Number(row.active_time),
+      state: row.state == null ? null : Number(row.state),
+      updatedAt: row.updated_at ? String(row.updated_at) : null,
+      tradedAt: row.traded_at ? String(row.traded_at) : null,
+      inventoryState: row.inventory_state == null ? null : Number(row.inventory_state),
+      isUser: payload.data.is_user === true,
+      isSubscribe: payload.data.is_subscribe === true,
+    } satisfies MonitorTaskProfile;
+  }
+
+  async getMonitorTaskInventory(taskId: string | number, pageIndex = 1, pageSize = 24) {
+    const payload = await this.request<Array<Record<string, unknown>>>("/task/get_task_all", {
+      method: "POST",
+      body: JSON.stringify({
+        task_id: String(taskId),
+        page_index: pageIndex,
+        page_size: pageSize,
+      }),
+    });
+
+    return (payload.data ?? []).map<MonitorInventoryItem>((row) => ({
+      categoryName: String(row.gp_name ?? "未分类"),
+      price: row.price == null ? null : Number(row.price),
+      marketName: String(row.market_name ?? "未知饰品"),
+      tradable: Number(row.tradable ?? 0) === 1,
+      count: Number(row.num ?? 0),
+      createdAt: row.created_at ? String(row.created_at) : null,
+      iconUrl:
+        typeof row.icon_url === "string" && row.icon_url.startsWith("http") ? row.icon_url : null,
+      goodId: row.good_id == null ? null : String(row.good_id),
+    }));
+  }
+
+  async getMonitorTaskBusiness(
+    taskId: string | number,
+    pageIndex = 1,
+    pageSize = 20,
+    search = "",
+    type = "ALL",
+  ) {
+    const payload = await this.request<{
+      trades?: Array<Record<string, unknown>>;
+    }>("/task/get_task_business", {
+      method: "POST",
+      body: JSON.stringify({
+        task_id: Number(taskId),
+        page_index: pageIndex,
+        page_size: pageSize,
+        search,
+        type,
+      }),
+    });
+
+    return (payload.data.trades ?? []).map<MonitorBusinessItem>((row) => ({
+      goodId: row.good_id == null ? null : String(row.good_id),
+      marketName: String(row.market_name ?? "未知饰品"),
+      count: Number(row.count ?? 0),
+      iconUrl:
+        typeof row.icon_url === "string" && row.icon_url.startsWith("http") ? row.icon_url : null,
+      tradable: Number(row.tradable ?? 0) === 1,
+      type: row.type == null ? null : Number(row.type),
+      createdAt: row.created_at ? String(row.created_at) : null,
+    }));
+  }
+
+  async getMonitorTaskSnapshots(taskId: string | number) {
+    const payload = await this.request<Array<Record<string, unknown>>>("/task/get_task_recent", {
+      method: "POST",
+      body: JSON.stringify({ task_id: String(taskId) }),
+    });
+
+    return (payload.data ?? []).map<MonitorSnapshotPoint>((row) => ({
+      snapshotId: Number(row.snapshot_id ?? 0),
+      createdAt: row.created_at ? String(row.created_at) : null,
     }));
   }
 

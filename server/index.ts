@@ -4,7 +4,12 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { analyzeItem, applyPushSignal, buildRecommendationResponse } from "./analytics.js";
+import {
+  analyzeItem,
+  applyPushSignal,
+  buildRecommendationResponse,
+  isAutonomousRecommendationEligible,
+} from "./analytics.js";
 import { CsfloatClient } from "./csfloat-client.js";
 import { CsqaqClient } from "./csqaq-client.js";
 import { LocalMonitorLlmClient } from "./llm-client.js";
@@ -13,9 +18,13 @@ import { listSnapshots } from "./history-store.js";
 import type {
   AnalysisResponse,
   AutoRefreshConfig,
+  HolderDrilldownResponse,
+  PortfolioAdvice,
+  PortfolioHolding,
   RecommendationResponse,
   RefreshRuntimeStatus,
   RuntimeConfig,
+  ScannerConfig,
   WatchlistSummary,
 } from "./types.js";
 
@@ -47,6 +56,18 @@ const DEFAULT_AUTO_REFRESH: AutoRefreshConfig = {
   includeDeep: true,
   maxDeepItems: 3,
 };
+const DEFAULT_SCANNER: ScannerConfig = {
+  enabled: true,
+  candidatePages: 2,
+  candidatePageSize: 24,
+  deepAnalyzeLimit: 15,
+  recommendationLimit: 15,
+  featuredLimit: 3,
+  hotWindowSize: 20,
+  randomSampleSize: 10,
+  maxRoundsPerCycle: 15,
+};
+const MIN_AUTONOMOUS_RECOMMENDATION_COUNT = 3;
 const refreshState: RefreshRuntimeStatus = {
   ...DEFAULT_AUTO_REFRESH,
   running: false,
@@ -58,8 +79,51 @@ const refreshState: RefreshRuntimeStatus = {
   lastRunTriggeredBy: null,
   lastError: null,
 };
+type ScannerCandidate = {
+  id: string;
+  name: string;
+  image: string | null;
+  marketHashName?: string | null;
+};
+
+type ScannerRuntime = {
+  signature: string;
+  currentWindowStart: number;
+  currentWindowCompletedIds: Set<string>;
+  seenCandidateIds: Set<string>;
+  deepAnalyzedIds: Set<string>;
+  pool: Map<string, AnalysisResponse>;
+  roundsRemaining: number;
+  totalRoundsCompleted: number;
+  lastRoundAt: string | null;
+  lastBatchCandidates: string[];
+  paused: boolean;
+  autofilling: boolean;
+  lastSource: string;
+  fallbackSource: string | null;
+  lastError: string | null;
+};
+
+const scannerRuntime: ScannerRuntime = {
+  signature: "",
+  currentWindowStart: 0,
+  currentWindowCompletedIds: new Set<string>(),
+  seenCandidateIds: new Set<string>(),
+  deepAnalyzedIds: new Set<string>(),
+  pool: new Map<string, AnalysisResponse>(),
+  roundsRemaining: DEFAULT_SCANNER.maxRoundsPerCycle,
+  totalRoundsCompleted: 0,
+  lastRoundAt: null,
+  lastBatchCandidates: [],
+  paused: false,
+  autofilling: false,
+  lastSource: "scanner",
+  fallbackSource: null,
+  lastError: null,
+};
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let deepRotationCursor = 0;
+let scannerAutofillTask: Promise<void> | null = null;
 
 function jsonOk(data: unknown) {
   return { ok: true, data };
@@ -84,6 +148,330 @@ function normalizeAutoRefreshConfig(config?: Partial<AutoRefreshConfig>): AutoRe
     includeDeep: config?.includeDeep ?? DEFAULT_AUTO_REFRESH.includeDeep,
     maxDeepItems: Math.min(12, Math.max(1, Number(config?.maxDeepItems ?? DEFAULT_AUTO_REFRESH.maxDeepItems))),
   };
+}
+
+function normalizeScannerConfig(config?: Partial<ScannerConfig>): ScannerConfig {
+  const hotWindowSize = Math.min(
+    60,
+    Math.max(10, Number(config?.hotWindowSize ?? DEFAULT_SCANNER.hotWindowSize)),
+  );
+  const randomSampleSize = Math.min(
+    hotWindowSize,
+    Math.min(20, Math.max(4, Number(config?.randomSampleSize ?? DEFAULT_SCANNER.randomSampleSize))),
+  );
+  return {
+    enabled: config?.enabled ?? DEFAULT_SCANNER.enabled,
+    candidatePages: Math.min(6, Math.max(1, Number(config?.candidatePages ?? DEFAULT_SCANNER.candidatePages))),
+    candidatePageSize: Math.min(36, Math.max(12, Number(config?.candidatePageSize ?? DEFAULT_SCANNER.candidatePageSize))),
+    deepAnalyzeLimit: Math.min(20, Math.max(3, Number(config?.deepAnalyzeLimit ?? DEFAULT_SCANNER.deepAnalyzeLimit))),
+    recommendationLimit: Math.min(20, Math.max(6, Number(config?.recommendationLimit ?? DEFAULT_SCANNER.recommendationLimit))),
+    featuredLimit: Math.min(6, Math.max(3, Number(config?.featuredLimit ?? DEFAULT_SCANNER.featuredLimit))),
+    hotWindowSize,
+    randomSampleSize,
+    maxRoundsPerCycle: Math.min(
+      30,
+      Math.max(1, Number(config?.maxRoundsPerCycle ?? DEFAULT_SCANNER.maxRoundsPerCycle)),
+    ),
+  };
+}
+
+function createEmptyRecommendationResponse(scanner = DEFAULT_SCANNER): RecommendationResponse {
+  const completedRoundsInCycle = Math.max(0, scanner.maxRoundsPerCycle - scannerRuntime.roundsRemaining);
+  return {
+    updatedAt: new Date().toISOString(),
+    universeCount: 0,
+    featured: [],
+    positive: [],
+    watch: [],
+    risk: [],
+    scanner: {
+      source: "scanner",
+      candidatePages: scanner.candidatePages,
+      candidatePageSize: scanner.candidatePageSize,
+      scannedCandidateCount: 0,
+      deepAnalyzedCount: 0,
+      recommendationLimit: scanner.recommendationLimit,
+      featuredLimit: scanner.featuredLimit,
+      sortBy: "建仓评分降序",
+      hotWindowSize: scanner.hotWindowSize,
+      randomSampleSize: scanner.randomSampleSize,
+      windowRangeStart: scannerRuntime.currentWindowStart + 1,
+      windowRangeEnd: scannerRuntime.currentWindowStart + scanner.hotWindowSize,
+      poolSize: scannerRuntime.pool.size,
+      completedRoundsInCycle,
+      totalRoundsCompleted: scannerRuntime.totalRoundsCompleted,
+      roundsRemaining: scannerRuntime.roundsRemaining,
+      maxRoundsPerCycle: scanner.maxRoundsPerCycle,
+      paused: scannerRuntime.paused,
+      autofilling: scannerRuntime.autofilling,
+      minimumTargetCount: MIN_AUTONOMOUS_RECOMMENDATION_COUNT,
+      lastRoundAt: scannerRuntime.lastRoundAt,
+      lastBatchCandidates: scannerRuntime.lastBatchCandidates,
+      fallbackSource: scannerRuntime.fallbackSource,
+    },
+    boards: [],
+  };
+}
+
+function createScannerSignature(scanner: ScannerConfig) {
+  return JSON.stringify({
+    enabled: scanner.enabled,
+    candidatePages: scanner.candidatePages,
+    candidatePageSize: scanner.candidatePageSize,
+    deepAnalyzeLimit: scanner.deepAnalyzeLimit,
+    recommendationLimit: scanner.recommendationLimit,
+    featuredLimit: scanner.featuredLimit,
+    hotWindowSize: scanner.hotWindowSize,
+    randomSampleSize: scanner.randomSampleSize,
+    maxRoundsPerCycle: scanner.maxRoundsPerCycle,
+  });
+}
+
+function resetScannerRuntime(scanner: ScannerConfig) {
+  scannerRuntime.signature = createScannerSignature(scanner);
+  scannerRuntime.currentWindowStart = 0;
+  scannerRuntime.currentWindowCompletedIds = new Set<string>();
+  scannerRuntime.seenCandidateIds = new Set<string>();
+  scannerRuntime.deepAnalyzedIds = new Set<string>();
+  scannerRuntime.pool = new Map<string, AnalysisResponse>();
+  scannerRuntime.roundsRemaining = scanner.maxRoundsPerCycle;
+  scannerRuntime.totalRoundsCompleted = 0;
+  scannerRuntime.lastRoundAt = null;
+  scannerRuntime.lastBatchCandidates = [];
+  scannerRuntime.paused = false;
+  scannerRuntime.autofilling = false;
+  scannerRuntime.lastSource = "scanner";
+  scannerRuntime.fallbackSource = null;
+  scannerRuntime.lastError = null;
+  cache.delete("scanner:recommendations");
+}
+
+function syncScannerRuntime(scanner: ScannerConfig) {
+  const nextSignature = createScannerSignature(scanner);
+  if (scannerRuntime.signature !== nextSignature) {
+    resetScannerRuntime(scanner);
+  }
+}
+
+function mulberry32(seed: number) {
+  let next = seed >>> 0;
+  return () => {
+    next += 0x6d2b79f5;
+    let hashed = Math.imul(next ^ (next >>> 15), 1 | next);
+    hashed ^= hashed + Math.imul(hashed ^ (hashed >>> 7), 61 | hashed);
+    return ((hashed ^ (hashed >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function pickSeededBatch<T>(rows: T[], count: number, seed: number) {
+  if (rows.length <= count) {
+    return [...rows];
+  }
+
+  const random = mulberry32(seed);
+  const copy = [...rows];
+  for (let index = copy.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(random() * (index + 1));
+    [copy[index], copy[swapIndex]] = [copy[swapIndex]!, copy[index]!];
+  }
+  return copy.slice(0, count);
+}
+
+function normalizeAutonomousCandidateName(name: string) {
+  return name.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function isExcludedAutonomousCandidate(name: string) {
+  const normalized = normalizeAutonomousCandidateName(name);
+  if (!normalized) {
+    return false;
+  }
+
+  if (normalized.includes("stattrak")) {
+    return true;
+  }
+
+  const isSticker = normalized.includes("sticker") || normalized.includes("印花");
+  if (isSticker && !(normalized.includes("holo") || normalized.includes("全息"))) {
+    return true;
+  }
+
+  const obviousNonTargets = [
+    "武器箱",
+    "胶囊",
+    "钥匙",
+    "音乐盒",
+    "补丁",
+    "涂鸦",
+    "graffiti",
+    "collectible",
+    "收藏品",
+    "pass",
+    "通行证",
+    "package",
+    "礼包",
+    "case",
+    "capsule",
+    "key",
+  ];
+
+  return obviousNonTargets.some((keyword) => normalized.includes(keyword));
+}
+
+function countActionableRecommendations(response: RecommendationResponse) {
+  return response.positive.length + response.watch.length;
+}
+
+async function ensureScannerMinimumInBackground(
+  force: boolean,
+  trigger: "manual" | "scheduled" | "startup" | "continue" | "api" = "api",
+  minimumCount = MIN_AUTONOMOUS_RECOMMENDATION_COUNT,
+  minimumRounds = 0,
+) {
+  if (scannerAutofillTask) {
+    return scannerAutofillTask;
+  }
+
+  scannerRuntime.autofilling = true;
+  scannerAutofillTask = (async () => {
+    try {
+      const config = await loadConfig();
+      const scanner = normalizeScannerConfig(config.scanner);
+      syncScannerRuntime(scanner);
+
+      if (!hasConfiguredToken(config) || !scanner.enabled) {
+        return;
+      }
+
+      let snapshot = await buildScannerRecommendations(force);
+      let loops = 0;
+      const maxLoops = Math.max(1, scannerRuntime.roundsRemaining);
+
+      while (
+        loops < maxLoops &&
+        !scannerRuntime.paused &&
+        scannerRuntime.roundsRemaining > 0 &&
+        (loops < minimumRounds || countActionableRecommendations(snapshot) < minimumCount)
+      ) {
+        snapshot = await runScannerRound(force && loops === 0, trigger);
+        loops += 1;
+      }
+    } catch (error) {
+      scannerRuntime.lastError = getErrorMessage(error);
+    } finally {
+      scannerRuntime.autofilling = false;
+      scannerAutofillTask = null;
+    }
+  })();
+
+  return scannerAutofillTask;
+}
+
+function buildScannerSnapshot(
+  scanner: ScannerConfig,
+  source: string,
+  fallbackSource: string | null,
+): RecommendationResponse {
+  const response = buildRecommendationResponse([...scannerRuntime.pool.values()], {
+    recommendationLimit: scanner.recommendationLimit,
+    featuredLimit: scanner.featuredLimit,
+    scanner: {
+      source,
+      candidatePages: scanner.candidatePages,
+      candidatePageSize: scanner.candidatePageSize,
+      scannedCandidateCount: scannerRuntime.seenCandidateIds.size,
+      deepAnalyzedCount: scannerRuntime.deepAnalyzedIds.size,
+      recommendationLimit: scanner.recommendationLimit,
+      featuredLimit: scanner.featuredLimit,
+      sortBy: "建仓推荐评分降序",
+      hotWindowSize: scanner.hotWindowSize,
+      randomSampleSize: scanner.randomSampleSize,
+      windowRangeStart: scannerRuntime.currentWindowStart + 1,
+      windowRangeEnd: scannerRuntime.currentWindowStart + scanner.hotWindowSize,
+      poolSize: scannerRuntime.pool.size,
+      completedRoundsInCycle: Math.max(0, scanner.maxRoundsPerCycle - scannerRuntime.roundsRemaining),
+      totalRoundsCompleted: scannerRuntime.totalRoundsCompleted,
+      roundsRemaining: scannerRuntime.roundsRemaining,
+      maxRoundsPerCycle: scanner.maxRoundsPerCycle,
+      paused: scannerRuntime.paused,
+      autofilling: scannerRuntime.autofilling,
+      minimumTargetCount: MIN_AUTONOMOUS_RECOMMENDATION_COUNT,
+      lastRoundAt: scannerRuntime.lastRoundAt,
+      lastBatchCandidates: scannerRuntime.lastBatchCandidates,
+      fallbackSource,
+    },
+  });
+
+  cache.set("scanner:recommendations", {
+    expiresAt: Date.now() + 15 * 60_000,
+    value: response,
+  });
+  return response;
+}
+
+async function loadScannerCandidates(
+  scanner: ScannerConfig,
+  force: boolean,
+): Promise<{ source: string; fallbackSource: string | null; items: ScannerCandidate[] }> {
+  try {
+    const items = await withCache(
+      "scanner:popular:list",
+      10 * 60_000,
+      () => client.getPopularGoods(),
+      force,
+    );
+    return {
+      source: "info/get_popular_goods",
+      fallbackSource: null,
+      items: items.map((item) => ({
+        id: item.id,
+        name: item.name,
+        image: item.image,
+        marketHashName: item.marketHashName,
+      })),
+    };
+  } catch (error) {
+    const message = getErrorMessage(error);
+    const targetCount = Math.max(
+      scanner.candidatePages * scanner.candidatePageSize,
+      scanner.hotWindowSize * scanner.maxRoundsPerCycle,
+      120,
+    );
+    const pageSize = scanner.candidatePageSize;
+    const pagesNeeded = Math.max(1, Math.ceil(targetCount / pageSize));
+    const items: ScannerCandidate[] = [];
+
+    for (let pageIndex = 1; pageIndex <= pagesNeeded; pageIndex += 1) {
+      const page = await withCache(
+        `scanner:page:${pageIndex}:${pageSize}`,
+        10 * 60_000,
+        () => client.getPageList(pageIndex, pageSize),
+        force,
+      );
+
+      page.items.forEach((item) => {
+        if (!item.id || items.some((row) => row.id === item.id)) {
+          return;
+        }
+
+        items.push({
+          id: item.id,
+          name: item.name,
+          image: item.image,
+        });
+      });
+
+      if (items.length >= targetCount) {
+        break;
+      }
+    }
+
+    return {
+      source: "info/get_page_list",
+      fallbackSource: `热门榜接口当前不可用，已退回公开饰品列表：${message}`,
+      items,
+    };
+  }
 }
 
 function sleep(ms: number) {
@@ -402,8 +790,9 @@ async function runAutoRefresh(
 
   const startedAt = Date.now();
   const watchlist = config.watchlist;
+  const scannerEnabled = normalizeScannerConfig(config.scanner).enabled;
 
-  if (!autoRefresh.enabled || !hasConfiguredToken(config) || watchlist.length === 0) {
+  if (!autoRefresh.enabled || !hasConfiguredToken(config) || (watchlist.length === 0 && !scannerEnabled)) {
     Object.assign(refreshState, {
       running: false,
       lastRunAt: new Date().toISOString(),
@@ -414,7 +803,7 @@ async function runAutoRefresh(
         ? "自动刷新已关闭"
         : !hasConfiguredToken(config)
           ? "未配置 CSQAQ ApiToken"
-          : "监控池为空",
+          : "监控池为空，且自主推荐扫描未启用",
     });
     return refreshState;
   }
@@ -423,19 +812,25 @@ async function runAutoRefresh(
   let deepCount = 0;
 
   try {
-    for (const entry of watchlist) {
-      await runAnalysis(entry.goodId, false, true);
-      summaryCount += 1;
-      await sleep(1200);
-    }
-
-    if (autoRefresh.includeDeep) {
-      const deepEntries = pickRotatedEntries(watchlist, autoRefresh.maxDeepItems);
-      for (const entry of deepEntries) {
-        await runAnalysis(entry.goodId, true, true);
-        deepCount += 1;
+    if (watchlist.length > 0) {
+      for (const entry of watchlist) {
+        await runAnalysis(entry.goodId, false, true);
+        summaryCount += 1;
         await sleep(1200);
       }
+
+      if (autoRefresh.includeDeep) {
+        const deepEntries = pickRotatedEntries(watchlist, autoRefresh.maxDeepItems);
+        for (const entry of deepEntries) {
+          await runAnalysis(entry.goodId, true, true);
+          deepCount += 1;
+          await sleep(1200);
+        }
+      }
+    }
+
+    if (normalizeScannerConfig(config.scanner).enabled) {
+      void ensureScannerMinimumInBackground(true, trigger ?? "manual").catch(() => undefined);
     }
 
     Object.assign(refreshState, {
@@ -488,6 +883,7 @@ app.get("/api/config", async (_request, response) => {
       watchlist: config.watchlist,
       platformMap: config.platformMap ?? null,
       autoRefresh: normalizeAutoRefreshConfig(config.autoRefresh),
+      scanner: normalizeScannerConfig(config.scanner),
     }),
   );
 });
@@ -540,6 +936,37 @@ app.post("/api/config/auto-refresh", async (request, response) => {
   }
 });
 
+app.post("/api/config/scanner", async (request, response) => {
+  try {
+    const body = z
+      .object({
+        enabled: z.boolean().optional(),
+        candidatePages: z.number().int().min(1).max(6).optional(),
+        candidatePageSize: z.number().int().min(12).max(36).optional(),
+        deepAnalyzeLimit: z.number().int().min(3).max(20).optional(),
+        recommendationLimit: z.number().int().min(6).max(20).optional(),
+        featuredLimit: z.number().int().min(3).max(6).optional(),
+        hotWindowSize: z.number().int().min(10).max(60).optional(),
+        randomSampleSize: z.number().int().min(4).max(20).optional(),
+        maxRoundsPerCycle: z.number().int().min(1).max(30).optional(),
+      })
+      .parse(request.body);
+
+    const nextConfig = await updateConfig((current) => ({
+      ...current,
+      scanner: normalizeScannerConfig({
+        ...current.scanner,
+        ...body,
+      }),
+    }));
+
+    resetScannerRuntime(normalizeScannerConfig(nextConfig.scanner));
+    response.json(jsonOk(normalizeScannerConfig(nextConfig.scanner)));
+  } catch (error) {
+    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+  }
+});
+
 app.post("/api/config/token", async (request, response) => {
   try {
     const body = z
@@ -559,6 +986,7 @@ app.post("/api/config/token", async (request, response) => {
       bindResult = await client.bindLocalIp();
     }
 
+    resetScannerRuntime(normalizeScannerConfig(nextConfig.scanner));
     void scheduleNextRefresh(10_000, "scheduled");
     response.json(
       jsonOk({
@@ -585,6 +1013,7 @@ app.post("/api/config/csfloat-key", async (request, response) => {
       csfloatApiKey: body.apiKey.trim(),
     }));
 
+    cache.delete("scanner:recommendations");
     response.json(
       jsonOk({
         maskedCsfloatApiKey: maskToken(nextConfig.csfloatApiKey),
@@ -627,6 +1056,7 @@ app.post("/api/config/watchlist", async (request, response) => {
 
     void scheduleNextRefresh(10_000, "scheduled");
     response.json(jsonOk(config.watchlist));
+    warmDeepAnalysis(body.goodId);
   } catch (error) {
     response.status(400).json({ ok: false, error: getErrorMessage(error) });
   }
@@ -644,6 +1074,107 @@ app.delete("/api/config/watchlist/:goodId", async (request, response) => {
     cache.delete(`deep:${goodId}`);
     void scheduleNextRefresh(10_000, "scheduled");
     response.json(jsonOk(config.watchlist));
+  } catch (error) {
+    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+  }
+});
+
+app.get("/api/portfolio", async (_request, response) => {
+  const config = await loadConfig();
+  response.json(jsonOk((config.portfolio ?? []).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))));
+});
+
+app.post("/api/portfolio", async (request, response) => {
+  try {
+    const body = z
+      .object({
+        id: z.string().optional(),
+        goodId: z.string().min(1),
+        name: z.string().min(1),
+        averageCost: z.coerce.number().positive(),
+        quantity: z.coerce.number().positive(),
+        note: z.string().max(300).optional(),
+      })
+      .parse(request.body);
+
+    const timestamp = new Date().toISOString();
+    const config = await updateConfig((current) => {
+      const portfolio = current.portfolio ?? [];
+      const targetId =
+        body.id ??
+        portfolio.find((item) => item.goodId === body.goodId)?.id ??
+        `holding_${Date.now()}_${body.goodId}`;
+      const nextRow: PortfolioHolding = {
+        id: targetId,
+        goodId: body.goodId,
+        name: body.name.trim(),
+        averageCost: Number(body.averageCost.toFixed(2)),
+        quantity: Number(body.quantity.toFixed(4)),
+        note: body.note?.trim() || undefined,
+        createdAt:
+          portfolio.find((item) => item.id === targetId)?.createdAt ??
+          timestamp,
+        updatedAt: timestamp,
+      };
+
+      return {
+        ...current,
+        portfolio: [
+          ...portfolio.filter((item) => item.id !== targetId && item.goodId !== body.goodId),
+          nextRow,
+        ],
+      };
+    });
+
+    response.json(jsonOk(config.portfolio ?? []));
+  } catch (error) {
+    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+  }
+});
+
+app.delete("/api/portfolio/:holdingId", async (request, response) => {
+  try {
+    const holdingId = request.params.holdingId;
+    const config = await updateConfig((current) => ({
+      ...current,
+      portfolio: (current.portfolio ?? []).filter((item) => item.id !== holdingId),
+    }));
+    response.json(jsonOk(config.portfolio ?? []));
+  } catch (error) {
+    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+  }
+});
+
+app.get("/api/portfolio/advice", async (_request, response) => {
+  try {
+    const config = await loadConfig();
+    if (!hasConfiguredToken(config)) {
+      response.json(jsonOk([] satisfies PortfolioAdvice[]));
+      return;
+    }
+
+    const holdings = config.portfolio ?? [];
+    const rows: PortfolioAdvice[] = [];
+
+    for (const holding of holdings) {
+      try {
+        const analysis =
+          getFreshCachedAnalysis(`deep:${holding.goodId}`) ??
+          (await runAnalysis(holding.goodId, true, false));
+        rows.push(buildPortfolioAdviceForHolding(holding, analysis));
+      } catch {
+        continue;
+      }
+    }
+
+    response.json(
+      jsonOk(
+        rows.sort(
+          (left, right) =>
+            Math.max(right.addScore, right.sellScore) - Math.max(left.addScore, left.sellScore),
+        ),
+      ),
+    );
   } catch (error) {
     response.status(400).json({ ok: false, error: getErrorMessage(error) });
   }
@@ -729,6 +1260,281 @@ async function runAnalysis(
   return analysis;
 }
 
+function warmDeepAnalysis(goodId: string) {
+  void runAnalysis(goodId, true, false).catch(() => undefined);
+}
+
+function recommendationRankScore(analysis: AnalysisResponse) {
+  return (
+    analysis.scores.entryScore -
+    Math.max(0, analysis.scores.dumpRiskScore) * 0.42 +
+    analysis.marketContext.teamSignal.buildScore * 0.32 +
+    analysis.earlyAccumulation.score * 0.18 +
+    analysis.prediction.expected7dPct * 1.8 +
+    (analysis.bottomReversal.triggered ? 24 : 0)
+  );
+}
+
+async function runScannerRound(
+  force: boolean,
+  trigger: "manual" | "scheduled" | "startup" | "continue" | "api" = "manual",
+): Promise<RecommendationResponse> {
+  const config = await loadConfig();
+  const scanner = normalizeScannerConfig(config.scanner);
+  syncScannerRuntime(scanner);
+
+  if (!hasConfiguredToken(config) || !scanner.enabled) {
+    return createEmptyRecommendationResponse(scanner);
+  }
+
+  if (scannerRuntime.paused || scannerRuntime.roundsRemaining <= 0) {
+    scannerRuntime.paused = true;
+    return buildScannerSnapshot(scanner, scannerRuntime.lastSource, scannerRuntime.fallbackSource);
+  }
+
+  const { source, fallbackSource, items } = await loadScannerCandidates(scanner, force);
+  if (!items.length) {
+    scannerRuntime.lastSource = source;
+    scannerRuntime.fallbackSource = fallbackSource;
+    scannerRuntime.lastError = "当前候选池为空";
+    return buildScannerSnapshot(scanner, source, fallbackSource);
+  }
+
+  if (scannerRuntime.currentWindowStart >= items.length) {
+    scannerRuntime.currentWindowStart = 0;
+    scannerRuntime.currentWindowCompletedIds.clear();
+  }
+
+  const getWindow = () => {
+    let window = items.slice(
+      scannerRuntime.currentWindowStart,
+      scannerRuntime.currentWindowStart + scanner.hotWindowSize,
+    );
+    if (!window.length) {
+      scannerRuntime.currentWindowStart = 0;
+      window = items.slice(0, scanner.hotWindowSize);
+    }
+    return window;
+  };
+
+  let window = getWindow();
+  let pending = window.filter((item) => !scannerRuntime.currentWindowCompletedIds.has(item.id));
+  if (!pending.length) {
+    scannerRuntime.currentWindowStart =
+      (scannerRuntime.currentWindowStart + scanner.hotWindowSize) % Math.max(items.length, 1);
+    scannerRuntime.currentWindowCompletedIds.clear();
+    window = getWindow();
+    pending = window;
+  }
+
+  const filteredPending = pending.filter((item) => !isExcludedAutonomousCandidate(item.name));
+  const samplePool =
+    filteredPending.length >= Math.min(scanner.randomSampleSize, pending.length)
+      ? filteredPending
+      : pending;
+
+  const sample = pickSeededBatch(
+    samplePool,
+    scanner.randomSampleSize,
+    scannerRuntime.currentWindowStart + scannerRuntime.totalRoundsCompleted * 97 + window.length,
+  );
+
+  const summaryAnalyses: AnalysisResponse[] = [];
+  for (const candidate of sample) {
+    scannerRuntime.seenCandidateIds.add(candidate.id);
+    try {
+      const analysis = await runAnalysis(candidate.id, false, force);
+      summaryAnalyses.push({
+        ...analysis,
+        item: {
+          ...analysis.item,
+          name: analysis.item.name || candidate.name,
+          image: analysis.item.image ?? candidate.image,
+        },
+      });
+    } catch {
+      continue;
+    }
+  }
+
+  const summaryEligible = summaryAnalyses
+    .filter((analysis) => isAutonomousRecommendationEligible(analysis))
+    .sort(
+      (left, right) =>
+        recommendationRankScore(right) - recommendationRankScore(left) ||
+        right.scores.entryScore - left.scores.entryScore ||
+        left.scores.dumpRiskScore - right.scores.dumpRiskScore,
+    );
+
+  const deepLimit = Math.min(scanner.deepAnalyzeLimit, summaryEligible.length);
+  const deepAnalyses: AnalysisResponse[] = [];
+  for (const summary of summaryEligible.slice(0, deepLimit)) {
+    try {
+      const deep = await runAnalysis(summary.item.goodId, true, force);
+      deepAnalyses.push(deep);
+      scannerRuntime.deepAnalyzedIds.add(summary.item.goodId);
+    } catch {
+      deepAnalyses.push(summary);
+    }
+  }
+
+  const deepMap = new Map(deepAnalyses.map((item) => [item.item.goodId, item]));
+  const finalAnalyses = summaryAnalyses.map((item) => deepMap.get(item.item.goodId) ?? item);
+  for (const analysis of finalAnalyses) {
+    if (isAutonomousRecommendationEligible(analysis)) {
+      scannerRuntime.pool.set(analysis.item.goodId, analysis);
+    } else {
+      scannerRuntime.pool.delete(analysis.item.goodId);
+    }
+  }
+
+  sample.forEach((candidate) => {
+    scannerRuntime.currentWindowCompletedIds.add(candidate.id);
+  });
+
+  if (window.every((item) => scannerRuntime.currentWindowCompletedIds.has(item.id))) {
+    scannerRuntime.currentWindowStart =
+      (scannerRuntime.currentWindowStart + scanner.hotWindowSize) % Math.max(items.length, 1);
+    scannerRuntime.currentWindowCompletedIds.clear();
+  }
+
+  scannerRuntime.roundsRemaining = Math.max(0, scannerRuntime.roundsRemaining - 1);
+  scannerRuntime.totalRoundsCompleted += 1;
+  scannerRuntime.paused = scannerRuntime.roundsRemaining <= 0;
+  scannerRuntime.lastRoundAt = new Date().toISOString();
+  scannerRuntime.lastBatchCandidates = sample.map((item) => item.name);
+  scannerRuntime.lastSource = source;
+  scannerRuntime.fallbackSource = fallbackSource;
+  scannerRuntime.lastError = null;
+
+  return buildScannerSnapshot(scanner, source, fallbackSource);
+}
+
+async function buildScannerRecommendations(force: boolean): Promise<RecommendationResponse> {
+  const config = await loadConfig();
+  const scanner = normalizeScannerConfig(config.scanner);
+  syncScannerRuntime(scanner);
+
+  if (!hasConfiguredToken(config) || !scanner.enabled) {
+    return createEmptyRecommendationResponse(scanner);
+  }
+
+  const cached = cache.get("scanner:recommendations");
+  if (!force && cached && cached.expiresAt > Date.now()) {
+    return cached.value as RecommendationResponse;
+  }
+
+  return buildScannerSnapshot(scanner, scannerRuntime.lastSource, scannerRuntime.fallbackSource);
+}
+
+function buildPortfolioAdviceForHolding(
+  holding: PortfolioHolding,
+  analysis: AnalysisResponse,
+): PortfolioAdvice {
+  const currentPrice = analysis.market.buffClose ?? analysis.market.yyypClose ?? null;
+  const costDeviationPct =
+    currentPrice != null && holding.averageCost > 0
+      ? Number((((currentPrice - holding.averageCost) / holding.averageCost) * 100).toFixed(2))
+      : null;
+  const unrealizedPnL =
+    currentPrice != null
+      ? Number(((currentPrice - holding.averageCost) * holding.quantity).toFixed(2))
+      : null;
+  const averagingEdge =
+    costDeviationPct == null
+      ? 0
+      : costDeviationPct < 0
+        ? Math.min(28, Math.abs(costDeviationPct) * 1.4)
+        : -Math.min(34, costDeviationPct * 1.2);
+  const addScore = Number(
+    Math.max(
+      -200,
+      Math.min(
+        200,
+        analysis.scores.entryScore -
+          analysis.prediction.cooldownRiskPct * 0.55 +
+          averagingEdge +
+          (analysis.marketContext.teamSignal.buildScore - analysis.marketContext.teamSignal.exitScore) *
+            0.5,
+      ),
+    ).toFixed(1),
+  );
+  const sellScore = Number(
+    Math.max(
+      -200,
+      Math.min(
+        200,
+        analysis.scores.dumpRiskScore +
+          (costDeviationPct != null && costDeviationPct > 0
+            ? Math.min(36, costDeviationPct * 1.3)
+            : costDeviationPct != null && costDeviationPct < -10
+              ? Math.min(18, Math.abs(costDeviationPct) * 0.5)
+              : 0) +
+          Math.max(0, analysis.prediction.cooldownRiskPct - 45) * 0.9,
+      ),
+    ).toFixed(1),
+  );
+  const holdScore = Number(
+    Math.max(
+      -200,
+      Math.min(
+        200,
+        70 -
+          Math.abs(addScore - sellScore) * 0.45 +
+          (analysis.scores.entryScore > 35 && analysis.scores.dumpRiskScore < 40 ? 24 : 0),
+      ),
+    ).toFixed(1),
+  );
+
+  let action: PortfolioAdvice["action"] = "hold";
+  if (sellScore >= 120) {
+    action = "exit";
+  } else if (sellScore >= 70) {
+    action = "reduce";
+  } else if (addScore >= 110) {
+    action = "add";
+  }
+
+  const reasons = [
+    ...analysis.scores.entryDrivers.slice(0, 2).map((item) => `加仓侧: ${item.detail}`),
+    ...analysis.scores.dumpDrivers.slice(0, 2).map((item) => `卖出侧: ${item.detail}`),
+  ].slice(0, 4);
+  const riskNotes = [
+    `当前持仓 ${holding.quantity} 件，成本 ${holding.averageCost.toFixed(2)}`,
+    currentPrice != null ? `现价 ${currentPrice.toFixed(2)}，浮动 ${costDeviationPct ?? "--"}%` : "现价暂未返回",
+    `7 天锁仓风险 ${analysis.prediction.cooldownRiskPct}%`,
+    analysis.llm.status === "ok" ? `AI: ${analysis.llm.summary}` : "AI 暂未给出本轮额外摘要",
+  ];
+
+  let summary = "当前更适合继续持有并等待下一轮信号确认。";
+  if (action === "add") {
+    summary = "加仓分领先，且成本位置没有明显过热，适合继续小步加仓。";
+  } else if (action === "reduce") {
+    summary = "卖出侧信号开始抬升，建议先减部分仓位，把回撤风险压下来。";
+  } else if (action === "exit") {
+    summary = "卖出分已经明显高于加仓分，建议优先考虑退出或大幅降仓。";
+  }
+
+  return {
+    holdingId: holding.id,
+    goodId: holding.goodId,
+    name: holding.name,
+    quantity: holding.quantity,
+    averageCost: holding.averageCost,
+    currentPrice,
+    costDeviationPct,
+    unrealizedPnL,
+    addScore,
+    sellScore,
+    holdScore,
+    action,
+    summary,
+    reasons,
+    riskNotes,
+    analysis,
+  };
+}
+
 app.get("/api/watchlist/analysis", async (request, response) => {
   try {
     const config = await loadConfig();
@@ -772,8 +1578,8 @@ app.get("/api/watchlist/analysis", async (request, response) => {
             level: "silent",
             shouldNotify: false,
             score: 0,
-            title: "鏆傛棤棰勮",
-            detail: "褰撳墠鏁版嵁鏈垚鍔熷埛鏂帮紝璇风◢鍚庡啀璇曘€?",
+            title: "暂无预警",
+            detail: "当前数据未成功刷新，请稍后再试。",
             sources: [],
             matchedRules: [],
             updatedAt: new Date().toISOString(),
@@ -824,33 +1630,72 @@ app.get("/api/watchlist/analysis", async (request, response) => {
 app.get("/api/recommendations", async (request, response) => {
   try {
     const config = await loadConfig();
+    const scanner = normalizeScannerConfig(config.scanner);
+    syncScannerRuntime(scanner);
     if (!hasConfiguredToken(config)) {
-      response.json(
-        jsonOk({
-          updatedAt: new Date().toISOString(),
-          universeCount: 0,
-          positive: [],
-          watch: [],
-          risk: [],
-          boards: [],
-        } satisfies RecommendationResponse),
-      );
+      response.json(jsonOk(createEmptyRecommendationResponse(scanner)));
       return;
     }
 
     const force = String(request.query.force ?? "") === "1";
-    const analyses: AnalysisResponse[] = [];
+    const sync = String(request.query.sync ?? "") === "1";
+    const advance = String(request.query.advance ?? "") === "1";
+    const cached = cache.get("scanner:recommendations");
+    const snapshot =
+      (cached?.value as RecommendationResponse | undefined) ?? (await buildScannerRecommendations(force));
+    const shouldAutofill =
+      (advance || countActionableRecommendations(snapshot) < MIN_AUTONOMOUS_RECOMMENDATION_COUNT) &&
+      !scannerRuntime.paused;
 
-    for (const entry of config.watchlist) {
-      try {
-        const cached = !force ? getFreshCachedAnalysis(`deep:${entry.goodId}`) : undefined;
-        analyses.push(cached ?? (await runAnalysis(entry.goodId, true, force)));
-      } catch {
-        continue;
+    if (sync) {
+      if (shouldAutofill) {
+        void ensureScannerMinimumInBackground(
+          force,
+          advance ? "api" : "scheduled",
+          MIN_AUTONOMOUS_RECOMMENDATION_COUNT,
+          advance ? 1 : 0,
+        ).catch(() => undefined);
+        response.json(jsonOk(buildScannerSnapshot(scanner, scannerRuntime.lastSource, scannerRuntime.fallbackSource)));
+        return;
       }
+      response.json(jsonOk(snapshot));
+      return;
+    }
+    if (shouldAutofill) {
+      void ensureScannerMinimumInBackground(force, "api").catch(() => undefined);
+      response.json(jsonOk(buildScannerSnapshot(scanner, scannerRuntime.lastSource, scannerRuntime.fallbackSource)));
+      return;
+    } else if (force) {
+      void buildScannerRecommendations(true).catch(() => undefined);
+    }
+    response.json(jsonOk(snapshot));
+  } catch (error) {
+    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+  }
+});
+
+app.post("/api/recommendations/continue", async (_request, response) => {
+  try {
+    const config = await loadConfig();
+    const scanner = normalizeScannerConfig(config.scanner);
+    syncScannerRuntime(scanner);
+
+    if (!hasConfiguredToken(config) || !scanner.enabled) {
+      response.json(jsonOk(createEmptyRecommendationResponse(scanner)));
+      return;
     }
 
-    response.json(jsonOk(buildRecommendationResponse(analyses)));
+    scannerRuntime.paused = false;
+    scannerRuntime.roundsRemaining = scanner.maxRoundsPerCycle;
+    scannerRuntime.lastError = null;
+    const next = await buildScannerRecommendations(true);
+    void ensureScannerMinimumInBackground(
+      true,
+      "continue",
+      MIN_AUTONOMOUS_RECOMMENDATION_COUNT,
+      1,
+    ).catch(() => undefined);
+    response.json(jsonOk(buildScannerSnapshot(scanner, next.scanner.source, next.scanner.fallbackSource)));
   } catch (error) {
     response.status(400).json({ ok: false, error: getErrorMessage(error) });
   }
@@ -878,11 +1723,85 @@ app.get("/api/items/:goodId/history", async (request, response) => {
   }
 });
 
+app.get("/api/items/:goodId/holders/:taskId", async (request, response) => {
+  try {
+    const goodId = request.params.goodId;
+    const taskId = z.coerce.number().int().positive().parse(request.params.taskId);
+    const pageIndex = z.coerce.number().int().min(1).parse(request.query.page ?? 1);
+    const pageSize = z.coerce.number().int().min(12).max(48).parse(request.query.pageSize ?? 24);
+
+    const analysis =
+      getFreshCachedAnalysis(`deep:${goodId}`) ?? (await runAnalysis(goodId, true, false));
+    const holder =
+      analysis.holderInsights.find((row) => row.taskId === taskId) ??
+      analysis.holderInsights.find((row) => row.steamId && row.steamId === request.query.steamId) ??
+      null;
+
+    const profile = await client.getMonitorTaskInfo(taskId);
+    const inventoryRows = await client.getMonitorTaskInventory(taskId, 1, 500);
+    const latestActivities = await client.getMonitorTaskBusiness(taskId, 1, 24, "", "ALL");
+    const focusedActivitiesRaw = await client.getMonitorTaskBusiness(
+      taskId,
+      1,
+      24,
+      analysis.item.name,
+      "ALL",
+    );
+    const snapshots = await client.getMonitorTaskSnapshots(taskId);
+
+    const focusedActivities = [...focusedActivitiesRaw, ...latestActivities]
+      .filter((row) => row.goodId === goodId || row.marketName.includes(analysis.item.name))
+      .filter(
+        (row, index, rows) =>
+          rows.findIndex(
+            (candidate) =>
+              candidate.goodId === row.goodId &&
+              candidate.marketName === row.marketName &&
+              candidate.count === row.count &&
+              candidate.createdAt === row.createdAt,
+          ) === index,
+      );
+    const inventoryStart = (pageIndex - 1) * pageSize;
+    const inventoryItems = inventoryRows.slice(inventoryStart, inventoryStart + pageSize);
+
+    response.json(
+      jsonOk({
+        goodId,
+        holder: {
+          taskId,
+          steamName: holder?.steamName ?? profile.steamName,
+          steamId: holder?.steamId ?? profile.steamId,
+          avatar: holder?.avatar ?? profile.avatar,
+          currentNum: holder?.currentNum ?? null,
+          role: holder?.role ?? "watch",
+          note: holder?.note ?? "当前缺少席位历史快照，先结合基础资料观察。",
+          sharePct: holder?.sharePct ?? null,
+          change24hAbs: holder?.change24hAbs ?? null,
+          change7dAbs: holder?.change7dAbs ?? null,
+        },
+        profile,
+        inventory: {
+          pageIndex,
+          pageSize,
+          hasMore: inventoryRows.length > inventoryStart + inventoryItems.length,
+          items: inventoryItems,
+        },
+        focusActivities: focusedActivities.slice(0, 12),
+        latestActivities: latestActivities.slice(0, 12),
+        snapshots: snapshots.slice(0, 20),
+      } satisfies HolderDrilldownResponse),
+    );
+  } catch (error) {
+    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+  }
+});
+
 app.get("/api/items/:goodId/analysis", async (request, response) => {
   try {
     const goodId = request.params.goodId;
     const force = String(request.query.force ?? "") === "1";
-    const analysis = await runAnalysis(goodId, true, force);
+    const mode = String(request.query.mode ?? "deep");
+    const analysis = await runAnalysis(goodId, mode !== "summary", force);
     response.json(jsonOk(analysis));
   } catch (error) {
     response.status(400).json({ ok: false, error: getErrorMessage(error) });
