@@ -1,0 +1,215 @@
+/* === Reactbits-style primitive effects === */
+
+/* Spotlight: mouse-follow radial gradient overlay */
+.spotlight-card {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.spotlight-card__glow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  transition: opacity var(--dur-fast) var(--ease-out-expo);
+}
+
+.spotlight-card__content {
+  position: relative;
+  z-index: 1;
+}
+
+/* Tilt: 3D perspective card (will-change scoped here) */
+.tilted-card {
+  will-change: transform;
+  transform-style: preserve-3d;
+}
+
+/* Magnetic button */
+.magnet-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  will-change: transform;
+}
+
+/* Shine border: rotating conic gradient */
+.shine-border {
+  position: relative;
+  border-radius: inherit;
+  isolation: isolate;
+}
+
+.shine-border::before {
+  content: "";
+  position: absolute;
+  inset: calc(var(--grad-border-w) * -1);
+  border-radius: inherit;
+  padding: var(--grad-border-w);
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    var(--shine-color, rgba(96, 229, 210, 0.9)) 30deg,
+    transparent 80deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  animation: shine-spin 3s linear infinite;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.shine-border.tone-warn {
+  --shine-color: rgba(255, 181, 73, 0.9);
+}
+
+.shine-border.tone-danger {
+  --shine-color: rgba(255, 98, 88, 0.9);
+}
+
+.shine-border.tone-success {
+  --shine-color: rgba(66, 211, 155, 0.9);
+}
+
+@keyframes shine-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shine-border::before {
+    animation: none;
+  }
+}
+
+/* Glow card: static severity-tinted halo */
+.glow-card {
+  position: relative;
+  border-radius: inherit;
+  transition:
+    box-shadow var(--dur-base) var(--ease-out-expo),
+    transform var(--dur-base) var(--ease-out-expo);
+}
+
+.glow-card.tone-success {
+  box-shadow: var(--glow-success);
+}
+
+.glow-card.tone-warn {
+  box-shadow: var(--glow-warn);
+}
+
+.glow-card.tone-danger {
+  box-shadow: var(--glow-danger);
+}
+
+.glow-card.tone-info {
+  box-shadow: var(--glow-info);
+}
+
+.glow-card.tone-accent {
+  box-shadow: var(--glow-accent);
+}
+
+.glow-card.tone-neutral {
+  box-shadow: var(--glow-neutral);
+}
+
+.glow-card.strength-subtle {
+  box-shadow: 0 0 0 1px var(--line), 0 10px 24px rgba(2, 7, 14, 0.2);
+}
+
+/* Aurora background: hero-only animated gradient backdrop */
+.aurora-bg {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.aurora-bg__canvas {
+  position: absolute;
+  inset: -20%;
+  z-index: 0;
+  pointer-events: none;
+  filter: blur(60px);
+  opacity: 0.55;
+}
+
+.aurora-bg__content {
+  position: relative;
+  z-index: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aurora-bg__canvas {
+    animation: none !important;
+  }
+}
+
+/* Playground (dev-only): showcase primitives via #playground hash */
+.playground {
+  padding: 40px 32px 80px;
+  max-width: 1200px;
+  margin: 0 auto;
+  display: grid;
+  gap: 32px;
+}
+
+.playground h1 {
+  margin: 0;
+  font-size: 28px;
+  letter-spacing: 0.01em;
+}
+
+.playground section {
+  display: grid;
+  gap: 14px;
+}
+
+.playground h2 {
+  margin: 0;
+  font-size: 16px;
+  color: var(--muted);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.playground-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.playground-card {
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  min-height: 140px;
+  display: grid;
+  gap: 8px;
+  align-content: center;
+}
+
+.playground-card strong {
+  font-size: 18px;
+}
+
+.playground-card span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.playground-number {
+  font-size: 42px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--accent-strong);
+}

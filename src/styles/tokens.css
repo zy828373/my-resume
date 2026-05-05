@@ -1,0 +1,103 @@
+:root {
+  /* === base surfaces === */
+  --bg: #06101b;
+  --bg-soft: #0d1726;
+  --bg-card: rgba(11, 20, 35, 0.9);
+  --bg-card-2: rgba(15, 28, 46, 0.92);
+  --bg-elevated: rgba(20, 35, 57, 0.94);
+  --line: rgba(132, 160, 189, 0.16);
+  --line-strong: rgba(132, 160, 189, 0.28);
+
+  /* === text === */
+  --text: #eef4ff;
+  --muted: #90a3bb;
+  --muted-2: #6f8298;
+
+  /* === semantic accents === */
+  --accent: #39cdb8;
+  --accent-strong: #60e5d2;
+  --accent-blue: #5b8dff;
+  --warn: #ffb549;
+  --danger: #ff6258;
+  --success: #42d39b;
+  --info: #5b8dff;
+
+  /* === gradient-border tokens (ShineBorder + selected ring) === */
+  --grad-accent: linear-gradient(135deg, #39cdb8 0%, #5b8dff 100%);
+  --grad-warn: linear-gradient(135deg, #ffb549 0%, #ff8a4c 100%);
+  --grad-danger: linear-gradient(135deg, #ff6258 0%, #ff3d8b 100%);
+  --grad-success: linear-gradient(135deg, #42d39b 0%, #39cdb8 100%);
+  --grad-neutral: linear-gradient(135deg, rgba(132, 160, 189, 0.35) 0%, rgba(132, 160, 189, 0.08) 100%);
+  --grad-border-w: 1px;
+
+  /* === spotlight radials === */
+  --spot-accent: rgba(96, 229, 210, 0.14);
+  --spot-blue: rgba(91, 141, 255, 0.14);
+  --spot-warn: rgba(255, 181, 73, 0.12);
+  --spot-danger: rgba(255, 98, 88, 0.12);
+  --spot-radius: 320px;
+
+  /* === status glows (severity halos) === */
+  --glow-success: 0 0 0 1px rgba(66, 211, 155, 0.35), 0 18px 40px rgba(66, 211, 155, 0.18);
+  --glow-warn: 0 0 0 1px rgba(255, 181, 73, 0.38), 0 18px 40px rgba(255, 181, 73, 0.16);
+  --glow-danger: 0 0 0 1px rgba(255, 98, 88, 0.4), 0 20px 44px rgba(255, 98, 88, 0.18);
+  --glow-info: 0 0 0 1px rgba(91, 141, 255, 0.34), 0 18px 40px rgba(91, 141, 255, 0.16);
+  --glow-accent: 0 0 0 1px rgba(57, 205, 184, 0.36), 0 18px 40px rgba(57, 205, 184, 0.18);
+  --glow-neutral: 0 0 0 1px var(--line-strong), 0 14px 32px rgba(2, 7, 14, 0.28);
+
+  /* === shadows === */
+  --shadow: 0 22px 60px rgba(2, 7, 14, 0.36);
+  --shadow-soft: 0 12px 30px rgba(2, 7, 14, 0.22);
+  --shadow-raised: 0 24px 56px rgba(1, 6, 13, 0.42);
+
+  /* === radius === */
+  --radius-sm: 10px;
+  --radius: 18px;
+  --radius-lg: 24px;
+
+  /* === spacing scale (8px grid) === */
+  --space-0: 0;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* === type scale (8 levels, modular 1.2) === */
+  --font-xs: 11px;
+  --font-sm: 12px;
+  --font-base: 13px;
+  --font-md: 14px;
+  --font-lg: 16px;
+  --font-xl: 20px;
+  --font-2xl: 26px;
+  --font-3xl: 34px;
+
+  --lh-tight: 1.2;
+  --lh-normal: 1.45;
+  --lh-relaxed: 1.6;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  /* === motion === */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 140ms;
+  --dur-base: 220ms;
+  --dur-slow: 420ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+    --dur-base: 0ms;
+    --dur-slow: 0ms;
+  }
+}
