@@ -37,8 +37,13 @@ const ANALYSIS_SCOPE_OPTIONS: Array<{
 }> = [
   { key: "agent", label: "探员板块", hint: "大行动探员、题材轮动" },
   { key: "holo_team_sticker", label: "全息战队贴纸", hint: "按年份/赛事细分" },
-  { key: "gun_skin", label: "枪皮板块", hint: "普通非 ST，2k-4w 存世" },
+  { key: "gun_skin", label: "枪皮板块", hint: "普通非 ST，供给分级" },
   { key: "discontinued_collection_skin", label: "绝版收藏品枪皮", hint: "大行动/稀有来源" },
+  { key: "knife_glove", label: "刀手套", hint: "低流通高单价" },
+  { key: "covert_tradeup", label: "红皮炼金", hint: "EV 数据不足先降级" },
+  { key: "weapon_case", label: "武器箱", hint: "仅保留稀有/停产候选" },
+  { key: "capsule", label: "胶囊", hint: "看消耗和内含贴纸" },
+  { key: "collectible", label: "收藏品", hint: "稀缺叙事和成交" },
 ];
 
 const HOLO_SERIES_OPTIONS: Array<{ key: StickerSeriesKey; label: string }> = [
@@ -50,6 +55,18 @@ const HOLO_SERIES_OPTIONS: Array<{ key: StickerSeriesKey; label: string }> = [
   { key: "shanghai_2024", label: "Shanghai 2024" },
   { key: "other", label: "其他年份" },
 ];
+
+const POOL_LABELS = {
+  candidate_core: "核心候选",
+  candidate_low_weight: "低权重候选",
+  watchlist: "观察池",
+  risk_only: "仅风险",
+  excluded: "已剔除",
+} as const;
+
+function poolLabel(pool: RecommendationCard["autonomousPool"]["pool"]) {
+  return POOL_LABELS[pool] ?? pool;
+}
 
 export interface RecommendationsPageProps {
   config: ConfigResponse | null;
@@ -185,12 +202,20 @@ export function RecommendationsPage({
     scannerForm.analysisScopes.includes(option.key),
   ).map((option) => option.label);
   const hasHoloScope = scannerForm.analysisScopes.includes("holo_team_sticker");
+  const preFilter = scannerStatus?.preFilter ?? null;
+  const rejectReasons = preFilter
+    ? Object.entries(preFilter.rejectReasonCounts)
+        .sort((left, right) => right[1] - left[1])
+        .slice(0, 4)
+    : [];
+  const poolDistribution = preFilter?.poolDistribution ?? null;
   const hasNotes =
     (scannerStatus &&
       actionableRecommendationCount < minimumRecommendationCount &&
       !scannerStatus.paused) ||
     (scannerStatus?.lastBatchCandidates?.length ?? 0) > 0 ||
-    Boolean(scannerStatus?.fallbackSource);
+    Boolean(scannerStatus?.fallbackSource) ||
+    Boolean(preFilter?.candidateShortage);
 
   return (
     <>
@@ -271,6 +296,40 @@ export function RecommendationsPage({
             </div>
           </div>
 
+          <div className="scanner-summary-grid scanner-summary-grid-wide">
+            <ScannerCard
+              label="预筛原始候选"
+              value={preFilter?.rawCandidateCount ?? 0}
+              hint={`候选页 ${scannerStatus?.candidatePages ?? config?.scanner?.candidatePages ?? 2} / 每页 ${scannerStatus?.candidatePageSize ?? config?.scanner?.candidatePageSize ?? 24}`}
+            />
+            <ScannerCard
+              label="预筛通过"
+              value={preFilter?.acceptedCandidateCount ?? 0}
+              hint={`本轮抽样 ${preFilter?.sampledCandidateCount ?? 0} 个`}
+              color="var(--spot-accent)"
+            />
+            <ScannerCard
+              label="预筛剔除"
+              value={preFilter?.rejectedCandidateCount ?? 0}
+              hint={
+                rejectReasons.length
+                  ? rejectReasons.map(([reason, count]) => `${reason} ${count}`).join(" / ")
+                  : "暂无剔除原因"
+              }
+              color="var(--spot-danger)"
+            />
+            <ScannerCard
+              label="池子分布"
+              display={
+                poolDistribution
+                  ? `${poolDistribution.candidate_core}/${poolDistribution.candidate_low_weight}/${poolDistribution.watchlist}/${poolDistribution.risk_only}/${poolDistribution.excluded}`
+                  : "0/0/0/0/0"
+              }
+              hint="核心 / 低权重 / 观察 / 风险 / 剔除"
+              color="var(--spot-blue)"
+            />
+          </div>
+
           <div className="scanner-scope-panel">
             <div className="scanner-scope-head">
               <div>
@@ -349,6 +408,24 @@ export function RecommendationsPage({
                 }
               />
             </label>
+            <ScannerNumberField
+              label="候选页数"
+              value={scannerForm.candidatePages}
+              min={1}
+              max={6}
+              onChange={(value) =>
+                setScannerForm((current) => ({ ...current, candidatePages: value }))
+              }
+            />
+            <ScannerNumberField
+              label="每页候选"
+              value={scannerForm.candidatePageSize}
+              min={12}
+              max={36}
+              onChange={(value) =>
+                setScannerForm((current) => ({ ...current, candidatePageSize: value }))
+              }
+            />
             <ScannerNumberField
               label="热门窗口"
               value={scannerForm.hotWindowSize}
@@ -451,6 +528,12 @@ export function RecommendationsPage({
                 }
               >
                 当前仅有 {actionableRecommendationCount} 个可推荐候选，系统会继续推进窗口，直到至少补出 {minimumRecommendationCount} 个候选或本轮循环耗尽。
+              </StageNoteCard>
+            ) : null}
+
+            {preFilter?.candidateShortage ? (
+              <StageNoteCard title="候选不足" tone="warning">
+                {preFilter.shortageReason ?? "预筛后候选不足，系统没有回退低质量候选。"}
               </StageNoteCard>
             ) : null}
 
@@ -642,16 +725,25 @@ export function RecommendationsPage({
                       <SignalPill tone={pillTone}>
                         {recommendationTypeLabel(card.recommendationType)}
                       </SignalPill>
+                      <SignalPill tone={card.autonomousPool.pool === "risk_only" ? "negative" : "positive"}>
+                        {poolLabel(card.autonomousPool.pool)}
+                      </SignalPill>
                     </div>
                     <div className="delta-row">
                       <span>建仓推荐 {card.entryScore}</span>
                       <span>综合 {card.score}</span>
+                      <span>准入 {card.autonomousPool.admissionScore}</span>
+                      <span>供给 {card.autonomousPool.supplyGrade}</span>
                       <span>题材 {card.hypeFitScore}</span>
                       <span>7天 {formatPercent(card.expected7dPct, 1)}</span>
                     </div>
                     <p className="holder-insight-note">{card.reason}</p>
                     <div className="chip-row secondary">
                       {[...(card.hypeTags ?? []), ...(card.triggerTags ?? [])]
+                        .concat(card.autonomousPool.keepReasons ?? [])
+                        .concat(card.autonomousPool.downgradeReasons ?? [])
+                        .concat(card.autonomousPool.excludeReasons ?? [])
+                        .concat(card.autonomousPool.riskTags ?? [])
                         .slice(0, 5)
                         .map((tag) => (
                         <span className="muted-tag" key={`${card.goodId}-${tag}`}>

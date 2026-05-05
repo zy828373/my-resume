@@ -1,11 +1,5 @@
 import { useCallback, useState } from "react";
-import type { MarketAnalysisResponse, MarketIndex } from "../types";
-
-interface ApiResponse<T> {
-  ok: boolean;
-  data?: T;
-  error?: string;
-}
+import type { ApiResponse, MarketAnalysisResponse, MarketIndex } from "../types";
 
 async function requestJson<T>(url: string): Promise<T> {
   const response = await fetch(url);

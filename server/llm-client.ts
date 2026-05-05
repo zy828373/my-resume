@@ -24,7 +24,7 @@ type HealthPayload = {
 };
 
 const DEFAULT_BASE_URL = process.env.LOCAL_LLM_BASE_URL ?? "http://127.0.0.1:18320/v1";
-const DEFAULT_API_KEY = process.env.LOCAL_LLM_API_KEY ?? "pandaclient";
+const DEFAULT_API_KEY = process.env.LOCAL_LLM_API_KEY ?? "";
 const DEFAULT_MODEL = process.env.LOCAL_LLM_MODEL ?? "gpt-5.4";
 const DEFAULT_TIMEOUT_MS = Number(process.env.LOCAL_LLM_TIMEOUT_MS ?? 60_000);
 const PROVIDER_NAME = "Local OpenAI-Compatible";

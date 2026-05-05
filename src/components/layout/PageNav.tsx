@@ -1,7 +1,7 @@
 import { motion } from "framer-motion";
 import { MagneticButton } from "../primitives/MagneticButton";
 
-export type PageKey = "market" | "watchlist" | "holders" | "recommendations" | "portfolio";
+export type PageKey = "market" | "watchlist" | "holders" | "recommendations" | "portfolio" | "health";
 
 export interface PageTab {
   key: PageKey;

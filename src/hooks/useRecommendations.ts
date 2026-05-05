@@ -1,10 +1,83 @@
 import { useCallback, useEffect, useState } from "react";
-import type { RecommendationResponse } from "../types";
+import type { ApiResponse, RecommendationResponse } from "../types";
 
-interface ApiResponse<T> {
-  ok: boolean;
-  data?: T;
-  error?: string;
+type RecommendationCard = RecommendationResponse["featured"][number];
+type AutonomousPoolDecision = RecommendationCard["autonomousPool"];
+
+const DEFAULT_ANALYSIS_SCOPES = [
+  "agent",
+  "holo_team_sticker",
+  "gun_skin",
+  "discontinued_collection_skin",
+  "knife_glove",
+  "covert_tradeup",
+  "weapon_case",
+  "capsule",
+  "collectible",
+] as const;
+
+function emptyPoolDistribution() {
+  return {
+    candidate_core: 0,
+    candidate_low_weight: 0,
+    watchlist: 0,
+    risk_only: 0,
+    excluded: 0,
+  };
+}
+
+function createFallbackAutonomousPool(): AutonomousPoolDecision {
+  return {
+    pool: "watchlist" as const,
+    admissionScore: 40,
+    category: "unknown",
+    supplyGrade: "NA" as const,
+    optimalGunSupply: null,
+    firstSupplyExclude: false,
+    canEnterEntryScore: false,
+    canEnterAlertScore: true,
+    summary: "旧版响应缺少自主推荐池判定。",
+    keepReasons: [],
+    downgradeReasons: ["旧版响应缺少自主推荐池判定。"],
+    excludeReasons: [],
+    riskTags: ["LEGACY_RESPONSE"],
+    evidence: [],
+  };
+}
+
+function normalizeAutonomousPool(value: Partial<AutonomousPoolDecision> | null | undefined): AutonomousPoolDecision {
+  const fallback = createFallbackAutonomousPool();
+  const hasValue = value != null;
+  const pool = value?.pool ?? fallback.pool;
+  return {
+    ...fallback,
+    ...(value ?? {}),
+    pool,
+    admissionScore: Number.isFinite(value?.admissionScore)
+      ? Number(value?.admissionScore)
+      : fallback.admissionScore,
+    category: value?.category ?? fallback.category,
+    supplyGrade: value?.supplyGrade ?? fallback.supplyGrade,
+    optimalGunSupply: value?.optimalGunSupply ?? fallback.optimalGunSupply,
+    firstSupplyExclude: Boolean(value?.firstSupplyExclude),
+    canEnterEntryScore:
+      value?.canEnterEntryScore ?? (pool === "candidate_core" || pool === "candidate_low_weight"),
+    canEnterAlertScore: value?.canEnterAlertScore ?? pool !== "excluded",
+    summary: value?.summary ?? fallback.summary,
+    keepReasons: Array.isArray(value?.keepReasons)
+      ? value.keepReasons.filter(Boolean)
+      : hasValue ? [] : fallback.keepReasons,
+    downgradeReasons: Array.isArray(value?.downgradeReasons)
+      ? value.downgradeReasons.filter(Boolean)
+      : hasValue ? [] : fallback.downgradeReasons,
+    excludeReasons: Array.isArray(value?.excludeReasons)
+      ? value.excludeReasons.filter(Boolean)
+      : hasValue ? [] : fallback.excludeReasons,
+    riskTags: Array.isArray(value?.riskTags)
+      ? value.riskTags.filter(Boolean)
+      : hasValue ? [] : fallback.riskTags,
+    evidence: Array.isArray(value?.evidence) ? value.evidence : fallback.evidence,
+  };
 }
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -39,6 +112,7 @@ function normalizeCard(card: RecommendationResponse["featured"][number]) {
     topHolders: Array.isArray(card.topHolders) ? card.topHolders : [],
     dataPoints: Array.isArray(card.dataPoints) ? card.dataPoints.filter(Boolean) : [],
     triggerTags: Array.isArray(card.triggerTags) ? card.triggerTags.filter(Boolean) : [],
+    autonomousPool: normalizeAutonomousPool(card.autonomousPool),
   };
 }
 
@@ -64,12 +138,7 @@ function normalize(response: RecommendationResponse): RecommendationResponse {
       sortBy: scanner?.sortBy ?? "建仓推荐评分降序",
       hotWindowSize: scanner?.hotWindowSize ?? 20,
       randomSampleSize: scanner?.randomSampleSize ?? 10,
-      analysisScopes: scanner?.analysisScopes ?? [
-        "agent",
-        "holo_team_sticker",
-        "gun_skin",
-        "discontinued_collection_skin",
-      ],
+      analysisScopes: scanner?.analysisScopes ?? [...DEFAULT_ANALYSIS_SCOPES],
       holoStickerSeries: scanner?.holoStickerSeries ?? [
         "stockholm_2021",
         "antwerp_2022",
@@ -94,6 +163,32 @@ function normalize(response: RecommendationResponse): RecommendationResponse {
         ? scanner.lastBatchCandidates.filter(Boolean)
         : [],
       fallbackSource: scanner?.fallbackSource ?? null,
+      preFilter: scanner?.preFilter
+        ? {
+            rawCandidateCount: scanner.preFilter.rawCandidateCount ?? 0,
+            acceptedCandidateCount: scanner.preFilter.acceptedCandidateCount ?? 0,
+            rejectedCandidateCount: scanner.preFilter.rejectedCandidateCount ?? 0,
+            sampledCandidateCount: scanner.preFilter.sampledCandidateCount ?? 0,
+            candidateShortage: Boolean(scanner.preFilter.candidateShortage),
+            shortageReason: scanner.preFilter.shortageReason ?? null,
+            sampledFromFiltered: scanner.preFilter.sampledFromFiltered ?? true,
+            rejectReasonCounts: scanner.preFilter.rejectReasonCounts ?? {},
+            poolDistribution: {
+              ...emptyPoolDistribution(),
+              ...(scanner.preFilter.poolDistribution ?? {}),
+            },
+          }
+        : {
+            rawCandidateCount: 0,
+            acceptedCandidateCount: 0,
+            rejectedCandidateCount: 0,
+            sampledCandidateCount: 0,
+            candidateShortage: false,
+            shortageReason: null,
+            sampledFromFiltered: true,
+            rejectReasonCounts: {},
+            poolDistribution: emptyPoolDistribution(),
+          },
       resetNotice: scanner?.resetNotice ?? null,
     },
     boards: Array.isArray(response.boards)

@@ -100,7 +100,7 @@
 
 .page-nav {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 10px;
   margin-top: 10px;
   padding: 4px;
@@ -197,6 +197,10 @@
   grid-template-columns: minmax(0, 1.2fr) 360px;
 }
 
+.health-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .market-strip {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -229,6 +233,29 @@
   min-height: 0;
 }
 
+.chart-area {
+  position: relative;
+}
+
+.chart-error {
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  height: 100%;
+  padding: 12px;
+  background: var(--bg-card);
+  color: var(--danger);
+  font-size: 13px;
+  text-align: center;
+}
+
+.chart-error button {
+  width: fit-content;
+}
+
 .chart-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -256,7 +283,7 @@
 
 @media (max-width: 1460px) {
   .page-nav {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
   }
 
   .market-layout,
@@ -278,7 +305,11 @@
   }
 }
 
-@media (max-width: 1120px) {.page-nav,
+@media (max-width: 1120px) {
+  .page-nav {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
 .market-strip,
 .workspace,
 .page-layout,

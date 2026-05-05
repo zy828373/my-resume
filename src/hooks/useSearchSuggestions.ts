@@ -1,14 +1,8 @@
 import { useEffect, useState } from "react";
-import type { SearchSuggestion } from "../types";
+import type { ApiResponse, SearchSuggestion } from "../types";
 
-interface ApiResponse<T> {
-  ok: boolean;
-  data?: T;
-  error?: string;
-}
-
-async function requestJson<T>(url: string): Promise<T> {
-  const response = await fetch(url);
+async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, init);
   const json = (await response.json()) as ApiResponse<T>;
   if (!response.ok || !json.ok) throw new Error(json.error || "请求失败");
   return json.data as T;
@@ -40,13 +34,25 @@ export function useSearchSuggestions({
       return;
     }
 
+    const controller = new AbortController();
+    let active = true;
     const timeout = window.setTimeout(() => {
-      void requestJson<SearchSuggestion[]>(`/api/search?q=${encodeURIComponent(query)}`)
-        .then(setResults)
-        .catch(() => setResults([]));
+      void requestJson<SearchSuggestion[]>(`/api/search?q=${encodeURIComponent(query)}`, {
+        signal: controller.signal,
+      })
+        .then((next) => {
+          if (active) setResults(next);
+        })
+        .catch(() => {
+          if (active) setResults([]);
+        });
     }, debounceMs);
 
-    return () => window.clearTimeout(timeout);
+    return () => {
+      active = false;
+      controller.abort();
+      window.clearTimeout(timeout);
+    };
   }, [query, configured, minLength, debounceMs]);
 
   return results;

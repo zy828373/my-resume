@@ -1,10 +1,21 @@
 node_modules
 dist
 data/
-.server-dev.log
-.server-restart.log
-.server-restart.err.log
+.claude/
+.env
+.env.*
+!.env.example
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 test-results/
+coverage/
+.vitest/
+*.bundle
+auto-coding-v2.1 from */
 head-App.tsx
 labor-contract-reference.docx
 劳动合同（参考版）.docx

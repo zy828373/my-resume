@@ -1,6 +1,11 @@
 import type { CsfloatListingSummary } from "./types.js";
 
 const BASE_URL = "https://csfloat.com/api/v1";
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+const requestTimeoutMs = parsePositiveInteger(
+  process.env.CSFLOAT_REQUEST_TIMEOUT_MS,
+  DEFAULT_REQUEST_TIMEOUT_MS,
+);
 
 type ApiKeyProvider = () => Promise<string | undefined>;
 
@@ -42,6 +47,40 @@ function normalizePrice(price: number | null) {
   return Number((price / 100).toFixed(2));
 }
 
+function parsePositiveInteger(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function isAbortError(error: unknown) {
+  return (
+    (error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
+}
+
+async function fetchJsonWithTimeout<T>(url: string, init: RequestInit): Promise<{ response: Response; payload: T }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
+    const payload = (await response.json()) as T;
+    return { payload, response };
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw new Error("CSFloat request timed out.");
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export class CsfloatClient {
   constructor(private readonly getApiKey?: ApiKeyProvider) {}
 
@@ -67,7 +106,7 @@ export class CsfloatClient {
 
     try {
       const apiKey = (await this.getApiKey?.())?.trim();
-      const response = await fetch(
+      const { payload, response } = await fetchJsonWithTimeout<CsfloatListing[]>(
         `${BASE_URL}/listings?limit=20&sort_by=lowest_price&market_hash_name=${encodeURIComponent(marketHashName)}`,
         {
           headers: {
@@ -81,7 +120,6 @@ export class CsfloatClient {
         throw new Error(`HTTP ${response.status}`);
       }
 
-      const payload = (await response.json()) as CsfloatListing[];
       const prices = payload.map((row) => normalizePrice(toNumber(row.price))).filter(
         (value): value is number => value != null,
       );

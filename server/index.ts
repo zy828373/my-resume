@@ -1,5 +1,6 @@
+import "./env.js";
 import cors from "cors";
-import express from "express";
+import express, { type NextFunction, type Request, type RequestHandler, type Response } from "express";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +11,13 @@ import {
   buildRecommendationResponse,
   isAutonomousRecommendationEligible,
 } from "./analytics.js";
+import {
+  attachAutonomousPoolDecision,
+  createEmptyPreFilterDiagnostics,
+  mergePreFilterPoolDistribution,
+  prefilterScannerCandidates,
+  summarizeAutonomousPoolDistribution,
+} from "./autonomous-pool.js";
 import {
   candidateMatchesScannerScopes,
   DEFAULT_HOLO_STICKER_SERIES,
@@ -22,7 +30,9 @@ import { CsfloatClient } from "./csfloat-client.js";
 import { CsqaqClient } from "./csqaq-client.js";
 import { LocalMonitorLlmClient } from "./llm-client.js";
 import { ensureDataDir, loadConfig, maskToken, updateConfig } from "./config-store.js";
-import { listSnapshots } from "./history-store.js";
+import { getSnapshotStoreStats, listSnapshots } from "./history-store.js";
+import { getFreshCacheEntryValue, hasScannerWindowShortage } from "./scanner-utils.js";
+import { buildHealthResponse } from "./services/health.js";
 import type {
   AnalysisResponse,
   AutoRefreshConfig,
@@ -34,6 +44,7 @@ import type {
   MonitorInventoryItem,
   PortfolioAdvice,
   PortfolioHolding,
+  PreFilterDiagnostics,
   RecommendationResponse,
   RecommendationScopeKey,
   RefreshRuntimeStatus,
@@ -45,20 +56,69 @@ import type {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.resolve(__dirname, "../dist");
-const port = Number(process.env.PORT ?? 8787);
+const DEFAULT_PORT = 8787;
+const port = parsePort(process.env.PORT, DEFAULT_PORT);
+const allowNetworkAccess = process.env.ALLOW_NETWORK_ACCESS === "1";
+const requestedHost = process.env.HOST?.trim() || "127.0.0.1";
+const host = resolveBindHost(requestedHost);
+const configuredCorsOrigins = new Set(
+  (process.env.CORS_ORIGINS ?? "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean),
+);
+const configuredAllowedHosts = new Set(
+  [
+    requestedHost,
+    ...(process.env.ALLOWED_HOSTS ?? "").split(","),
+  ]
+    .map((value) => parseHostname(value.trim()) || value.trim())
+    .map((value) => value.replace(/^\[|\]$/gu, "").toLowerCase())
+    .filter((value) => value && value !== "0.0.0.0" && value !== "::" && value !== "*"),
+);
 
 const app = express();
-app.use(cors());
+app.use(
+  cors({
+    origin(origin, callback) {
+      callback(null, isAllowedOrigin(origin) ? true : false);
+    },
+  }),
+);
+app.use(restrictLocalApiSurface);
 app.use(express.json({ limit: "1mb" }));
 
 const apiTokenFromEnv = process.env.CSQAQ_API_TOKEN?.trim();
+function resolveConfiguredSecret(runtimeValue: string | undefined, envValue: string | undefined) {
+  const runtime = runtimeValue?.trim();
+  if (runtime) {
+    return { source: "runtime" as const, value: runtime };
+  }
+
+  const env = envValue?.trim();
+  if (env) {
+    return { source: "env" as const, value: env };
+  }
+
+  return { source: "none" as const, value: undefined };
+}
+
+function resolveEffectiveCsqaqToken(config: RuntimeConfig) {
+  return resolveConfiguredSecret(config.apiToken, apiTokenFromEnv);
+}
+
 const client = new CsqaqClient(async () => {
   const config = await loadConfig();
-  return config.apiToken?.trim() || apiTokenFromEnv;
+  return resolveEffectiveCsqaqToken(config).value;
 });
+const csfloatApiKeyFromEnv = process.env.CSFLOAT_API_KEY?.trim();
+function resolveEffectiveCsfloatKey(config: RuntimeConfig) {
+  return resolveConfiguredSecret(config.csfloatApiKey, csfloatApiKeyFromEnv);
+}
+
 const csfloatClient = new CsfloatClient(async () => {
   const config = await loadConfig();
-  return config.csfloatApiKey?.trim();
+  return resolveEffectiveCsfloatKey(config).value;
 });
 const llmClient = new LocalMonitorLlmClient();
 
@@ -131,6 +191,13 @@ type ScannerRuntime = {
   lastSource: string;
   fallbackSource: string | null;
   lastError: string | null;
+  lastPreFilter: PreFilterDiagnostics | null;
+};
+type ScannerAutofillRequest = {
+  force: boolean;
+  trigger: "manual" | "scheduled" | "startup" | "continue" | "api";
+  minimumCount: number;
+  minimumRounds: number;
 };
 
 const scannerRuntime: ScannerRuntime = {
@@ -150,10 +217,103 @@ const scannerRuntime: ScannerRuntime = {
   lastSource: "scanner",
   fallbackSource: null,
   lastError: null,
+  lastPreFilter: null,
 };
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+let refreshScheduleChain = Promise.resolve();
+let refreshRunTask: Promise<RefreshRuntimeStatus> | null = null;
 let deepRotationCursor = 0;
 let scannerAutofillTask: Promise<void> | null = null;
+let pendingScannerAutofillRequest: ScannerAutofillRequest | null = null;
+
+function parsePort(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 && parsed <= 65_535 ? parsed : fallback;
+}
+
+function parseHostname(value: string | undefined) {
+  if (!value) return "";
+  try {
+    return new URL(value.includes("://") ? value : `http://${value}`).hostname;
+  } catch {
+    return "";
+  }
+}
+
+function isLoopbackHostname(value: string) {
+  const hostname = value.replace(/^\[|\]$/gu, "").toLowerCase();
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+}
+
+function isLoopbackValue(value: string | undefined) {
+  if (!value) return false;
+  return isLoopbackHostname(parseHostname(value) || value);
+}
+
+function resolveBindHost(value: string) {
+  if (allowNetworkAccess || isLoopbackValue(value)) {
+    return value;
+  }
+
+  // eslint-disable-next-line no-console
+  console.warn(`Ignoring unsafe HOST=${value}; set ALLOW_NETWORK_ACCESS=1 to bind outside loopback.`);
+  return "127.0.0.1";
+}
+
+function isAllowedOrigin(origin: string | undefined) {
+  if (!origin) return true;
+  if (configuredCorsOrigins.has(origin)) return true;
+  return isLoopbackHostname(parseHostname(origin));
+}
+
+function isTrustedFetchMetadata(request: Request) {
+  const site = request.headers["sec-fetch-site"];
+  if (typeof site !== "string") return true;
+  return site === "same-origin" || site === "same-site" || site === "none";
+}
+
+function isTrustedHost(hostHeader: string | undefined) {
+  const hostname = (parseHostname(hostHeader) || "").replace(/^\[|\]$/gu, "").toLowerCase();
+  if (isLoopbackHostname(hostname)) return true;
+  if (!allowNetworkAccess) return false;
+  return configuredAllowedHosts.has(hostname);
+}
+
+function isTrustedRemoteAddress(remoteAddress: string | undefined) {
+  if (allowNetworkAccess) return true;
+  if (!remoteAddress) return false;
+  const normalized = remoteAddress.replace(/^::ffff:/u, "");
+  return isLoopbackHostname(normalized);
+}
+
+function restrictLocalApiSurface(request: Request, response: Response, next: NextFunction) {
+  if (!request.path.startsWith("/api")) {
+    next();
+    return;
+  }
+
+  if (!isTrustedRemoteAddress(request.socket.remoteAddress)) {
+    response.status(403).json({ ok: false, error: "Untrusted request address." });
+    return;
+  }
+
+  if (!isTrustedFetchMetadata(request)) {
+    response.status(403).json({ ok: false, error: "Untrusted request metadata." });
+    return;
+  }
+
+  if (!isAllowedOrigin(request.headers.origin)) {
+    response.status(403).json({ ok: false, error: "Untrusted request origin." });
+    return;
+  }
+
+  if (!isTrustedHost(request.headers.host)) {
+    response.status(403).json({ ok: false, error: "Untrusted request host." });
+    return;
+  }
+
+  next();
+}
 
 function jsonOk(data: unknown) {
   return { ok: true, data };
@@ -167,8 +327,63 @@ function getErrorMessage(error: unknown) {
   return "未知错误";
 }
 
+class ApiError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+function getApiStatus(error: unknown, fallbackStatus = 500) {
+  if (error instanceof ApiError) return error.status;
+  if (error instanceof z.ZodError) return 400;
+  if (typeof error === "object" && error != null) {
+    const record = error as { status?: unknown; statusCode?: unknown };
+    const status = typeof record.status === "number" ? record.status : record.statusCode;
+    if (typeof status === "number" && status >= 400 && status <= 599) {
+      if (status === 500 && fallbackStatus !== 500) {
+        return fallbackStatus;
+      }
+      return status;
+    }
+  }
+  return fallbackStatus;
+}
+
+function sendJsonError(response: Response, error: unknown, fallbackStatus = 500) {
+  response.status(getApiStatus(error, fallbackStatus)).json({
+    ok: false,
+    error: getErrorMessage(error),
+  });
+}
+
+function apiRoute(handler: RequestHandler): RequestHandler {
+  return (request, response, next) => {
+    Promise.resolve(handler(request, response, next)).catch(next);
+  };
+}
+
+function classifyAnalysisError(error: unknown) {
+  if (error instanceof z.ZodError) return 400;
+  if (error instanceof ApiError) return error.status;
+
+  const message = getErrorMessage(error);
+  if (/goodId|item id|不能为空|无效/u.test(message)) return 400;
+  if (/token|ApiToken|api token|未配置|请先配置|CSQAQ ApiToken/iu.test(message)) return 428;
+  if (/timeout|timed out|ETIMEDOUT|504|超时/u.test(message)) return 504;
+  if (/rate limit|too many|429|频率限制|限流|风控|稍后重试|重试/u.test(message)) return 503;
+  if (/CSQAQ|CSFLOAT|upstream|fetch|network|ECONN|ENOTFOUND|EAI_AGAIN|HTTP|502|503/u.test(message)) {
+    return 502;
+  }
+
+  return 500;
+}
+
 function hasConfiguredToken(config: RuntimeConfig) {
-  return Boolean(config.apiToken?.trim() || apiTokenFromEnv);
+  return resolveEffectiveCsqaqToken(config).source !== "none";
 }
 
 function normalizeAutoRefreshConfig(config?: Partial<AutoRefreshConfig>): AutoRefreshConfig {
@@ -581,6 +796,7 @@ function createEmptyRecommendationResponse(scanner = DEFAULT_SCANNER): Recommend
       lastRoundAt: scannerRuntime.lastRoundAt,
       lastBatchCandidates: scannerRuntime.lastBatchCandidates,
       fallbackSource: scannerRuntime.fallbackSource,
+      preFilter: createEmptyPreFilterDiagnostics(),
     },
     boards: [],
   };
@@ -615,11 +831,11 @@ function resetScannerRuntime(scanner: ScannerConfig) {
   scannerRuntime.lastRoundAt = null;
   scannerRuntime.lastBatchCandidates = [];
   scannerRuntime.paused = false;
-  scannerRuntime.autofilling = false;
+  scannerRuntime.autofilling = Boolean(scannerAutofillTask);
   scannerRuntime.lastSource = "scanner";
   scannerRuntime.fallbackSource = null;
   scannerRuntime.lastError = null;
-  scannerAutofillTask = null;
+  scannerRuntime.lastPreFilter = null;
   cache.delete("scanner:recommendations");
 }
 
@@ -678,6 +894,12 @@ function normalizeAutonomousCandidateName(name: string) {
   return name.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
+function scannerCandidateScopeText(candidate: ScannerCandidate) {
+  return [candidate.name, candidate.marketHashName, candidate.sourceLabel]
+    .filter(Boolean)
+    .join(" ");
+}
+
 function isExcludedAutonomousCandidate(candidate: ScannerCandidate, scanner: ScannerConfig) {
   const normalized = normalizeAutonomousCandidateName(candidate.name);
   if (!normalized) {
@@ -701,7 +923,7 @@ function isExcludedAutonomousCandidate(candidate: ScannerCandidate, scanner: Sca
     return false;
   }
 
-  if (!candidateMatchesScannerScopes(candidate.name, scanner)) {
+  if (!candidateMatchesScannerScopes(scannerCandidateScopeText(candidate), scanner)) {
     return true;
   }
 
@@ -728,6 +950,7 @@ function isExcludedAutonomousCandidate(candidate: ScannerCandidate, scanner: Sca
 }
 
 function scannerCandidateMatchesScope(candidate: ScannerCandidate, scanner: ScannerConfig) {
+  const scopeText = scannerCandidateScopeText(candidate);
   if (
     candidate.scopeHint &&
     candidate.scopeHint !== "holo_team_sticker" &&
@@ -735,11 +958,22 @@ function scannerCandidateMatchesScope(candidate: ScannerCandidate, scanner: Scan
   ) {
     return true;
   }
-  return candidateMatchesScannerScopes(candidate.name, scanner);
+  return candidateMatchesScannerScopes(scopeText, scanner);
 }
 
 function countActionableRecommendations(response: RecommendationResponse) {
   return response.positive.length + response.watch.length;
+}
+
+function rememberPendingScannerAutofill(request: ScannerAutofillRequest) {
+  pendingScannerAutofillRequest = pendingScannerAutofillRequest
+    ? {
+        force: pendingScannerAutofillRequest.force || request.force,
+        trigger: request.trigger,
+        minimumCount: Math.max(pendingScannerAutofillRequest.minimumCount, request.minimumCount),
+        minimumRounds: Math.max(pendingScannerAutofillRequest.minimumRounds, request.minimumRounds),
+      }
+    : request;
 }
 
 async function ensureScannerMinimumInBackground(
@@ -749,20 +983,19 @@ async function ensureScannerMinimumInBackground(
   minimumRounds = 0,
 ) {
   if (scannerAutofillTask) {
+    rememberPendingScannerAutofill({ force, trigger, minimumCount, minimumRounds });
     return scannerAutofillTask;
   }
 
   scannerRuntime.autofilling = true;
-  const generation = scannerRuntime.generation;
-  scannerAutofillTask = (async () => {
+  let generation = scannerRuntime.generation;
+  let task = Promise.resolve();
+  task = (async () => {
     try {
       const config = await loadConfig();
       const scanner = normalizeScannerConfig(config.scanner);
       syncScannerRuntime(scanner);
-
-      if (scannerRuntime.generation !== generation) {
-        return;
-      }
+      generation = scannerRuntime.generation;
 
       if (!hasConfiguredToken(config) || !scanner.enabled) {
         return;
@@ -787,14 +1020,28 @@ async function ensureScannerMinimumInBackground(
         scannerRuntime.lastError = getErrorMessage(error);
       }
     } finally {
-      if (scannerRuntime.generation === generation) {
-        scannerRuntime.autofilling = false;
+      if (scannerAutofillTask === task) {
         scannerAutofillTask = null;
+        const pending = pendingScannerAutofillRequest;
+        pendingScannerAutofillRequest = null;
+        if (pending) {
+          void ensureScannerMinimumInBackground(
+            pending.force,
+            pending.trigger,
+            pending.minimumCount,
+            pending.minimumRounds,
+          ).catch((error) => {
+            scannerRuntime.lastError = getErrorMessage(error);
+          });
+        } else {
+          scannerRuntime.autofilling = false;
+        }
       }
     }
   })();
 
-  return scannerAutofillTask;
+  scannerAutofillTask = task;
+  return task;
 }
 
 function buildScannerSnapshot(
@@ -802,6 +1049,10 @@ function buildScannerSnapshot(
   source: string,
   fallbackSource: string | null,
 ): RecommendationResponse {
+  const poolDistribution = summarizeAutonomousPoolDistribution(
+    [...scannerRuntime.pool.values()],
+    scanner,
+  );
   const response = buildRecommendationResponse([...scannerRuntime.pool.values()], {
     recommendationLimit: scanner.recommendationLimit,
     featuredLimit: scanner.featuredLimit,
@@ -831,6 +1082,7 @@ function buildScannerSnapshot(
       lastRoundAt: scannerRuntime.lastRoundAt,
       lastBatchCandidates: scannerRuntime.lastBatchCandidates,
       fallbackSource,
+      preFilter: mergePreFilterPoolDistribution(scannerRuntime.lastPreFilter, poolDistribution),
     },
   });
 
@@ -899,6 +1151,57 @@ function buildScopedCandidateQueries(scanner: ScannerConfig): ScopedCandidateQue
         类型: GUN_TYPE_FILTERS,
         磨损: TARGET_WEAR_FILTERS,
       },
+    });
+  }
+  if (scanner.analysisScopes.includes("knife_glove")) {
+    queries.push(
+      {
+        cacheKey: "knife",
+        sourceLabel: "刀具板块",
+        scopeHint: "knife_glove",
+        search: "knife",
+      },
+      {
+        cacheKey: "glove",
+        sourceLabel: "手套板块",
+        scopeHint: "knife_glove",
+        search: "glove",
+      },
+    );
+  }
+  if (scanner.analysisScopes.includes("covert_tradeup")) {
+    queries.push({
+      cacheKey: "covert_tradeup",
+      sourceLabel: "红皮炼金燃料",
+      scopeHint: "covert_tradeup",
+      search: "Covert",
+      filter: {
+        类型: GUN_TYPE_FILTERS,
+      },
+    });
+  }
+  if (scanner.analysisScopes.includes("weapon_case")) {
+    queries.push({
+      cacheKey: "weapon_case",
+      sourceLabel: "武器箱板块",
+      scopeHint: "weapon_case",
+      search: "Case",
+    });
+  }
+  if (scanner.analysisScopes.includes("capsule")) {
+    queries.push({
+      cacheKey: "capsule",
+      sourceLabel: "胶囊板块",
+      scopeHint: "capsule",
+      search: "Capsule",
+    });
+  }
+  if (scanner.analysisScopes.includes("collectible")) {
+    queries.push({
+      cacheKey: "collectible",
+      sourceLabel: "收藏品板块",
+      scopeHint: "collectible",
+      search: "Collection",
     });
   }
   return queries;
@@ -1144,7 +1447,7 @@ async function loadScannerCandidates(
             image: item.image,
             marketHashName: item.marketHashName,
           }))
-          .filter((item) => candidateMatchesScannerScopes(item.name, scanner)),
+          .filter((item) => scannerCandidateMatchesScope(item, scanner)),
       );
       return {
         source: "info/get_popular_goods",
@@ -1180,7 +1483,7 @@ async function loadScannerCandidates(
       })),
     );
     const scopedPopular = popularCandidates.filter((item) =>
-      candidateMatchesScannerScopes(item.name, scanner),
+      scannerCandidateMatchesScope(item, scanner),
     );
     return {
       source: "info/get_popular_goods",
@@ -1212,6 +1515,12 @@ function getFreshCachedAnalysis(cacheKey: string) {
   return current.value as AnalysisResponse;
 }
 
+function getFreshCachedRecommendationSnapshot() {
+  return getFreshCacheEntryValue(
+    cache.get("scanner:recommendations") as { expiresAt: number; value: RecommendationResponse } | undefined,
+  );
+}
+
 function pickRotatedEntries<T>(rows: T[], count: number) {
   if (!rows.length || count <= 0) {
     return [] as T[];
@@ -1237,7 +1546,7 @@ function shouldHydrateLlm(insight?: AnalysisResponse["llm"]) {
 function buildPendingLlmInsight(previous?: AnalysisResponse["llm"]): AnalysisResponse["llm"] {
   if (
     previous &&
-    (previous.status === "ok" || previous.pushReason !== "AI 正在后台刷新中")
+    (previous.status === "ok" || previous.pushReason !== "AI 正在后台刷新")
   ) {
     return previous;
   }
@@ -1267,7 +1576,7 @@ function buildPendingLlmInsight(previous?: AnalysisResponse["llm"]): AnalysisRes
     actionPlan: previous?.actionPlan ?? [],
     nextCheckMinutes: previous?.nextCheckMinutes ?? null,
     shouldPushAlert: previous?.shouldPushAlert ?? false,
-    pushReason: llmClient.isEnabled() ? "AI 正在后台刷新中" : "本地 LLM 未启用。",
+    pushReason: llmClient.isEnabled() ? "AI 正在后台刷新" : "本地 LLM 未启用",
   };
 }
 
@@ -1475,7 +1784,22 @@ async function withCache<T>(
   return task;
 }
 
-async function scheduleNextRefresh(delayMs?: number, nextTrigger: RefreshRuntimeStatus["lastRunTriggeredBy"] = "scheduled") {
+function scheduleNextRefresh(
+  delayMs?: number,
+  nextTrigger: RefreshRuntimeStatus["lastRunTriggeredBy"] = "scheduled",
+) {
+  const task = refreshScheduleChain.then(() => scheduleNextRefreshNow(delayMs, nextTrigger));
+  refreshScheduleChain = task.then(
+    () => undefined,
+    () => undefined,
+  );
+  return task;
+}
+
+async function scheduleNextRefreshNow(
+  delayMs?: number,
+  nextTrigger: RefreshRuntimeStatus["lastRunTriggeredBy"] = "scheduled",
+) {
   if (refreshTimer) {
     clearTimeout(refreshTimer);
     refreshTimer = null;
@@ -1492,51 +1816,79 @@ async function scheduleNextRefresh(delayMs?: number, nextTrigger: RefreshRuntime
 
   const waitMs = delayMs ?? autoRefresh.intervalMinutes * 60_000;
   refreshState.nextRunAt = new Date(Date.now() + waitMs).toISOString();
-  refreshTimer = setTimeout(async () => {
-    await runAutoRefresh(nextTrigger);
-    await scheduleNextRefresh(undefined, "scheduled");
+  refreshTimer = setTimeout(() => {
+    void runScheduledRefresh(nextTrigger);
   }, waitMs);
+}
+
+async function runScheduledRefresh(nextTrigger: RefreshRuntimeStatus["lastRunTriggeredBy"]) {
+  try {
+    await runAutoRefresh(nextTrigger);
+  } catch (error) {
+    refreshState.lastError = getErrorMessage(error);
+  }
+
+  try {
+    await scheduleNextRefresh(undefined, "scheduled");
+  } catch (error) {
+    refreshState.nextRunAt = null;
+    refreshState.lastError = getErrorMessage(error);
+  }
 }
 
 async function runAutoRefresh(
   trigger: RefreshRuntimeStatus["lastRunTriggeredBy"] = "manual",
 ) {
-  if (refreshState.running) {
-    return refreshState;
+  if (refreshRunTask) {
+    return refreshRunTask;
   }
 
-  const config = await loadConfig();
-  const autoRefresh = normalizeAutoRefreshConfig(config.autoRefresh);
-  Object.assign(refreshState, autoRefresh, {
-    running: true,
-    lastRunTriggeredBy: trigger,
-    lastError: null,
+  refreshState.running = true;
+  refreshState.lastRunTriggeredBy = trigger;
+  refreshState.lastError = null;
+
+  const task = runAutoRefreshNow(trigger).finally(() => {
+    refreshRunTask = null;
   });
+  refreshRunTask = task;
+  return task;
+}
 
+async function runAutoRefreshNow(
+  trigger: RefreshRuntimeStatus["lastRunTriggeredBy"] = "manual",
+) {
   const startedAt = Date.now();
-  const watchlist = config.watchlist;
-  const scannerEnabled = normalizeScannerConfig(config.scanner).enabled;
-
-  if (!autoRefresh.enabled || !hasConfiguredToken(config) || (watchlist.length === 0 && !scannerEnabled)) {
-    Object.assign(refreshState, {
-      running: false,
-      lastRunAt: new Date().toISOString(),
-      lastRunMs: 0,
-      lastRunSummaryCount: 0,
-      lastRunDeepCount: 0,
-      lastError: !autoRefresh.enabled
-        ? "自动刷新已关闭"
-        : !hasConfiguredToken(config)
-          ? "未配置 CSQAQ ApiToken"
-          : "监控池为空，且自主推荐扫描未启用",
-    });
-    return refreshState;
-  }
-
   let summaryCount = 0;
   let deepCount = 0;
 
   try {
+    const config = await loadConfig();
+    const autoRefresh = normalizeAutoRefreshConfig(config.autoRefresh);
+    Object.assign(refreshState, autoRefresh, {
+      running: true,
+      lastRunTriggeredBy: trigger,
+      lastError: null,
+    });
+
+    const watchlist = config.watchlist;
+    const scannerEnabled = normalizeScannerConfig(config.scanner).enabled;
+
+    if (!autoRefresh.enabled || !hasConfiguredToken(config) || (watchlist.length === 0 && !scannerEnabled)) {
+      Object.assign(refreshState, {
+        running: false,
+        lastRunAt: new Date().toISOString(),
+        lastRunMs: 0,
+        lastRunSummaryCount: 0,
+        lastRunDeepCount: 0,
+        lastError: !autoRefresh.enabled
+          ? "自动刷新已关闭"
+          : !hasConfiguredToken(config)
+            ? "未配置 CSQAQ ApiToken"
+            : "监控池为空，且自主推荐扫描未启用",
+      });
+      return refreshState;
+    }
+
     if (watchlist.length > 0) {
       for (const entry of watchlist) {
         await runAnalysis(entry.goodId, false, true);
@@ -1581,39 +1933,81 @@ async function runAutoRefresh(
 }
 
 app.get("/api/health", async (_request, response) => {
-  const config = await loadConfig();
-  const autoRefresh = normalizeAutoRefreshConfig(config.autoRefresh);
-  response.json(
-    jsonOk({
-      configured: hasConfiguredToken(config),
-      watchlistCount: config.watchlist.length,
-      llmEnabled: llmClient.isEnabled(),
-      autoRefreshEnabled: autoRefresh.enabled,
-    }),
-  );
+  try {
+    const config = await loadConfig();
+    const autoRefresh = normalizeAutoRefreshConfig(config.autoRefresh);
+    const scannerConfig = normalizeScannerConfig(config.scanner);
+    let snapshots: Awaited<ReturnType<typeof getSnapshotStoreStats>> & { error?: string };
+
+    try {
+      snapshots = await getSnapshotStoreStats();
+    } catch (error) {
+      snapshots = {
+        itemCount: 0,
+        rowCount: 0,
+        latestAt: null,
+        error: getErrorMessage(error),
+      };
+    }
+
+    const csfloatKey = resolveEffectiveCsfloatKey(config);
+    response.json(
+      jsonOk(
+        buildHealthResponse({
+          config,
+          autoRefresh: {
+            ...refreshState,
+            ...autoRefresh,
+          },
+          scannerConfig,
+          scannerRuntime: {
+            ...scannerRuntime,
+            completedRoundsInCycle: Math.max(
+              0,
+              scannerConfig.maxRoundsPerCycle - scannerRuntime.roundsRemaining,
+            ),
+          },
+          snapshots,
+          csqaqConfigured: hasConfiguredToken(config),
+          csfloatConfigured: csfloatKey.source !== "none",
+          llmEnabled: llmClient.isEnabled(),
+        }),
+      ),
+    );
+  } catch (error) {
+    sendJsonError(response, error);
+  }
 });
 
-app.get("/api/ai/health", async (_request, response) => {
+app.get("/api/ai/health", apiRoute(async (_request, response) => {
   const payload = await llmClient.health();
   response.json(jsonOk(payload));
-});
+}));
 
 app.get("/api/config", async (_request, response) => {
-  const config = await loadConfig();
-  response.json(
-    jsonOk({
-      configured: hasConfiguredToken(config),
-      maskedToken: maskToken(config.apiToken ?? apiTokenFromEnv),
-      maskedCsfloatApiKey: maskToken(config.csfloatApiKey),
-      watchlist: config.watchlist,
-      platformMap: config.platformMap ?? null,
-      autoRefresh: normalizeAutoRefreshConfig(config.autoRefresh),
-      scanner: normalizeScannerConfig(config.scanner),
-    }),
-  );
+  try {
+    const config = await loadConfig();
+    const token = resolveEffectiveCsqaqToken(config);
+    const csfloatKey = resolveEffectiveCsfloatKey(config);
+    response.json(
+      jsonOk({
+        configured: hasConfiguredToken(config),
+        maskedToken: maskToken(token.value),
+        maskedCsfloatApiKey: maskToken(csfloatKey.value),
+        tokenSource: token.source,
+        csfloatApiKeySource: csfloatKey.source,
+        watchlist: config.watchlist,
+        platformMap: config.platformMap ?? null,
+        autoRefresh: normalizeAutoRefreshConfig(config.autoRefresh),
+        scanner: normalizeScannerConfig(config.scanner),
+      }),
+    );
+  } catch (error) {
+    sendJsonError(response, error);
+  }
 });
 
-app.get("/api/refresh/status", async (_request, response) => {
+app.get("/api/refresh/status", apiRoute(async (_request, response) => {
   const config = await loadConfig();
   const autoRefresh = normalizeAutoRefreshConfig(config.autoRefresh);
   response.json(
@@ -1622,14 +2016,19 @@ app.get("/api/refresh/status", async (_request, response) => {
       ...autoRefresh,
     } satisfies RefreshRuntimeStatus),
   );
-});
+}));
 
 app.post("/api/refresh/run", async (_request, response) => {
-  void runAutoRefresh("manual");
-  void scheduleNextRefresh();
+  const started = !refreshRunTask && !refreshState.running;
+  void runAutoRefresh("manual").catch((error) => {
+    refreshState.lastError = getErrorMessage(error);
+  });
+  void scheduleNextRefresh().catch((error) => {
+    refreshState.lastError = getErrorMessage(error);
+  });
   response.json(
     jsonOk({
-      started: !refreshState.running,
+      started,
       running: true,
     }),
   );
@@ -1654,10 +2053,12 @@ app.post("/api/config/auto-refresh", async (request, response) => {
       }),
     }));
 
-    void scheduleNextRefresh(nextConfig.autoRefresh?.enabled ? 10_000 : undefined, "scheduled");
+    void scheduleNextRefresh(nextConfig.autoRefresh?.enabled ? 10_000 : undefined, "scheduled").catch((error) => {
+      refreshState.lastError = getErrorMessage(error);
+    });
     response.json(jsonOk(nextConfig.autoRefresh ?? DEFAULT_AUTO_REFRESH));
   } catch (error) {
-    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+    sendJsonError(response, error, classifyAnalysisError(error));
   }
 });
 
@@ -1675,7 +2076,17 @@ app.post("/api/config/scanner", async (request, response) => {
         randomSampleSize: z.number().int().min(4).max(20).optional(),
         maxRoundsPerCycle: z.number().int().min(1).max(30).optional(),
         analysisScopes: z
-          .array(z.enum(["agent", "holo_team_sticker", "gun_skin", "discontinued_collection_skin"]))
+          .array(z.enum([
+            "agent",
+            "holo_team_sticker",
+            "gun_skin",
+            "discontinued_collection_skin",
+            "knife_glove",
+            "covert_tradeup",
+            "weapon_case",
+            "capsule",
+            "collectible",
+          ]))
           .optional(),
         holoStickerSeries: z
           .array(
@@ -1704,7 +2115,7 @@ app.post("/api/config/scanner", async (request, response) => {
     resetScannerRuntime(normalizeScannerConfig(nextConfig.scanner));
     response.json(jsonOk(normalizeScannerConfig(nextConfig.scanner)));
   } catch (error) {
-    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+    sendJsonError(response, error, classifyAnalysisError(error));
   }
 });
 
@@ -1729,7 +2140,9 @@ app.post("/api/config/token", async (request, response) => {
 
     resetScannerRuntime(normalizeScannerConfig(nextConfig.scanner));
     cache.delete("market:analysis");
-    void scheduleNextRefresh(10_000, "scheduled");
+    void scheduleNextRefresh(10_000, "scheduled").catch((error) => {
+      refreshState.lastError = getErrorMessage(error);
+    });
     response.json(
       jsonOk({
         configured: true,
@@ -1738,7 +2151,7 @@ app.post("/api/config/token", async (request, response) => {
       }),
     );
   } catch (error) {
-    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+    sendJsonError(response, error, classifyAnalysisError(error));
   }
 });
 
@@ -1762,7 +2175,7 @@ app.post("/api/config/csfloat-key", async (request, response) => {
       }),
     );
   } catch (error) {
-    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+    sendJsonError(response, error, classifyAnalysisError(error));
   }
 });
 
@@ -1771,7 +2184,7 @@ app.post("/api/config/bind-ip", async (_request, response) => {
     const result = await client.bindLocalIp();
     response.json(jsonOk({ message: result }));
   } catch (error) {
-    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+    sendJsonError(response, error, classifyAnalysisError(error));
   }
 });
 
@@ -1796,11 +2209,13 @@ app.post("/api/config/watchlist", async (request, response) => {
       };
     });
 
-    void scheduleNextRefresh(10_000, "scheduled");
+    void scheduleNextRefresh(10_000, "scheduled").catch((error) => {
+      refreshState.lastError = getErrorMessage(error);
+    });
     response.json(jsonOk(config.watchlist));
     warmDeepAnalysis(body.goodId);
   } catch (error) {
-    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+    sendJsonError(response, error, classifyAnalysisError(error));
   }
 });
 
@@ -1814,14 +2229,16 @@ app.delete("/api/config/watchlist/:goodId", async (request, response) => {
 
     cache.delete(`summary:${goodId}`);
     cache.delete(`deep:${goodId}`);
-    void scheduleNextRefresh(10_000, "scheduled");
+    void scheduleNextRefresh(10_000, "scheduled").catch((error) => {
+      refreshState.lastError = getErrorMessage(error);
+    });
     response.json(jsonOk(config.watchlist));
   } catch (error) {
-    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+    sendJsonError(response, error, classifyAnalysisError(error));
   }
 });
 
-app.get("/api/portfolio", async (_request, response) => {
+app.get("/api/portfolio", apiRoute(async (_request, response) => {
   const config = await loadConfig();
   response.json(
     jsonOk(
@@ -1830,7 +2247,7 @@ app.get("/api/portfolio", async (_request, response) => {
         .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
     ),
   );
-});
+}));
 
 app.post("/api/portfolio", async (request, response) => {
   try {
@@ -1877,7 +2294,7 @@ app.post("/api/portfolio", async (request, response) => {
 
     response.json(jsonOk(config.portfolio ?? []));
   } catch (error) {
-    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+    sendJsonError(response, error, classifyAnalysisError(error));
   }
 });
 
@@ -1890,7 +2307,7 @@ app.delete("/api/portfolio/:holdingId", async (request, response) => {
     }));
     response.json(jsonOk(config.portfolio ?? []));
   } catch (error) {
-    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+    sendJsonError(response, error, classifyAnalysisError(error));
   }
 });
 
@@ -1925,7 +2342,7 @@ app.get("/api/portfolio/advice", async (_request, response) => {
       ),
     );
   } catch (error) {
-    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+    sendJsonError(response, error, classifyAnalysisError(error));
   }
 });
 
@@ -1933,7 +2350,7 @@ app.get("/api/search", async (request, response) => {
   try {
     const config = await loadConfig();
     if (!hasConfiguredToken(config)) {
-      response.status(400).json({ ok: false, error: "请先配置 ApiToken。" });
+      response.status(428).json({ ok: false, error: "请先配置 ApiToken。" });
       return;
     }
 
@@ -1946,7 +2363,7 @@ app.get("/api/search", async (request, response) => {
     const rows = await client.searchSuggest(query);
     response.json(jsonOk(rows.slice(0, 12)));
   } catch (error) {
-    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+    sendJsonError(response, error, classifyAnalysisError(error));
   }
 });
 
@@ -1955,7 +2372,7 @@ app.get("/api/market/overview", async (_request, response) => {
     const rows = await withCache("market:overview", 60_000, () => client.getCurrentData());
     response.json(jsonOk(rows));
   } catch (error) {
-    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+    sendJsonError(response, error, classifyAnalysisError(error));
   }
 });
 
@@ -1966,14 +2383,14 @@ app.get("/api/market/analysis", async (_request, response) => {
     );
     response.json(jsonOk(analysis));
   } catch (error) {
-    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+    sendJsonError(response, error, classifyAnalysisError(error));
   }
 });
 
-app.get("/api/watchlist", async (_request, response) => {
+app.get("/api/watchlist", apiRoute(async (_request, response) => {
   const config = await loadConfig();
   response.json(jsonOk(config.watchlist));
-});
+}));
 
 async function runAnalysis(
   goodId: string,
@@ -2017,7 +2434,7 @@ async function runAnalysis(
     }
   }
 
-  return analysis;
+  return attachAutonomousPoolDecision(analysis, normalizeScannerConfig(config.scanner));
 }
 
 function warmDeepAnalysis(goodId: string) {
@@ -2059,15 +2476,26 @@ async function runScannerRound(
     return buildScannerSnapshot(scanner, scannerRuntime.lastSource, scannerRuntime.fallbackSource);
   }
 
-  const { source, fallbackSource, items } = await loadScannerCandidates(scanner, force);
+  const { source, fallbackSource, items: rawItems } = await loadScannerCandidates(scanner, force);
   if (isStale()) {
     return buildScannerSnapshot(scanner, scannerRuntime.lastSource, scannerRuntime.fallbackSource);
   }
 
+  const preFilter = prefilterScannerCandidates(rawItems, scanner);
+  scannerRuntime.lastPreFilter = preFilter.diagnostics;
+  const items = preFilter.accepted;
+
   if (!items.length) {
     scannerRuntime.lastSource = source;
     scannerRuntime.fallbackSource = fallbackSource;
-    scannerRuntime.lastError = "当前候选池为空";
+    scannerRuntime.lastError = rawItems.length
+      ? "自主推荐池预筛后候选不足，未回退低质量候选。"
+      : "当前候选池为空";
+    scannerRuntime.lastBatchCandidates = [];
+    scannerRuntime.roundsRemaining = Math.max(0, scannerRuntime.roundsRemaining - 1);
+    scannerRuntime.totalRoundsCompleted += 1;
+    scannerRuntime.lastRoundAt = new Date().toISOString();
+    scannerRuntime.paused = scannerRuntime.roundsRemaining <= 0;
     return buildScannerSnapshot(scanner, source, fallbackSource);
   }
 
@@ -2098,17 +2526,28 @@ async function runScannerRound(
     pending = window;
   }
 
-  const filteredPending = pending.filter((item) => !isExcludedAutonomousCandidate(item, scanner));
-  const samplePool =
-    filteredPending.length >= Math.min(scanner.randomSampleSize, pending.length)
-      ? filteredPending
-      : pending;
-
   const sample = pickSeededBatch(
-    samplePool,
+    pending,
     scanner.randomSampleSize,
     scannerRuntime.currentWindowStart + scannerRuntime.totalRoundsCompleted * 97 + window.length,
   );
+  const windowShortage = hasScannerWindowShortage(
+    pending.length,
+    window.length,
+    scanner.randomSampleSize,
+  );
+  scannerRuntime.lastPreFilter = {
+    ...(scannerRuntime.lastPreFilter ?? createEmptyPreFilterDiagnostics()),
+    sampledCandidateCount: sample.length,
+    candidateShortage:
+      Boolean(scannerRuntime.lastPreFilter?.candidateShortage) ||
+      windowShortage,
+    shortageReason:
+      scannerRuntime.lastPreFilter?.shortageReason ??
+      (windowShortage
+        ? `本轮预筛窗口仅抽到 ${sample.length} 个候选，未回退低质量候选。`
+        : null),
+  };
 
   const summaryAnalyses: AnalysisResponse[] = [];
   for (const candidate of sample) {
@@ -2288,8 +2727,8 @@ function buildPortfolioAdviceForHolding(
   }
 
   const reasons = [
-    ...analysis.scores.entryDrivers.slice(0, 2).map((item) => `加仓侧: ${item.detail}`),
-    ...analysis.scores.dumpDrivers.slice(0, 2).map((item) => `卖出侧: ${item.detail}`),
+    ...analysis.scores.entryDrivers.slice(0, 2).map((item) => `加仓：${item.detail}`),
+    ...analysis.scores.dumpDrivers.slice(0, 2).map((item) => `卖出：${item.detail}`),
   ].slice(0, 4);
   const riskNotes = [
     `当前持仓 ${holding.quantity} 件，成本 ${holding.averageCost.toFixed(2)}`,
@@ -2416,7 +2855,7 @@ app.get("/api/watchlist/analysis", async (request, response) => {
       }),
     );
   } catch (error) {
-    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+    sendJsonError(response, error, classifyAnalysisError(error));
   }
 });
 
@@ -2433,22 +2872,25 @@ app.get("/api/recommendations", async (request, response) => {
     const force = String(request.query.force ?? "") === "1";
     const sync = String(request.query.sync ?? "") === "1";
     const advance = String(request.query.advance ?? "") === "1";
-    const cached = cache.get("scanner:recommendations");
-    const snapshot =
-      (cached?.value as RecommendationResponse | undefined) ?? (await buildScannerRecommendations(force));
+    const freshSnapshot = force ? undefined : getFreshCachedRecommendationSnapshot();
+    const snapshot = freshSnapshot ?? (await buildScannerRecommendations(force));
     const shouldAutofill =
       (advance || countActionableRecommendations(snapshot) < MIN_AUTONOMOUS_RECOMMENDATION_COUNT) &&
       !scannerRuntime.paused;
 
     if (sync) {
       if (shouldAutofill) {
-        void ensureScannerMinimumInBackground(
+        await ensureScannerMinimumInBackground(
           force,
           advance ? "api" : "scheduled",
           MIN_AUTONOMOUS_RECOMMENDATION_COUNT,
           advance ? 1 : 0,
-        ).catch(() => undefined);
-        response.json(jsonOk(buildScannerSnapshot(scanner, scannerRuntime.lastSource, scannerRuntime.fallbackSource)));
+        );
+        response.json(jsonOk(getFreshCachedRecommendationSnapshot() ?? buildScannerSnapshot(
+          scanner,
+          scannerRuntime.lastSource,
+          scannerRuntime.fallbackSource,
+        )));
         return;
       }
       response.json(jsonOk(snapshot));
@@ -2463,7 +2905,7 @@ app.get("/api/recommendations", async (request, response) => {
     }
     response.json(jsonOk(snapshot));
   } catch (error) {
-    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+    sendJsonError(response, error, classifyAnalysisError(error));
   }
 });
 
@@ -2495,7 +2937,7 @@ app.post("/api/recommendations/reset", async (_request, response) => {
       : null;
     response.json(jsonOk(snapshot));
   } catch (error) {
-    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+    sendJsonError(response, error, classifyAnalysisError(error));
   }
 });
 
@@ -2522,7 +2964,7 @@ app.post("/api/recommendations/continue", async (_request, response) => {
     ).catch(() => undefined);
     response.json(jsonOk(buildScannerSnapshot(scanner, next.scanner.source, next.scanner.fallbackSource)));
   } catch (error) {
-    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+    sendJsonError(response, error, classifyAnalysisError(error));
   }
 });
 
@@ -2544,7 +2986,7 @@ app.get("/api/items/:goodId/history", async (request, response) => {
       }),
     );
   } catch (error) {
-    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+    sendJsonError(response, error, classifyAnalysisError(error));
   }
 });
 
@@ -2618,7 +3060,7 @@ app.get("/api/items/:goodId/holders/:taskId", async (request, response) => {
       } satisfies HolderDrilldownResponse),
     );
   } catch (error) {
-    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+    sendJsonError(response, error, classifyAnalysisError(error));
   }
 });
 
@@ -2630,8 +3072,21 @@ app.get("/api/items/:goodId/analysis", async (request, response) => {
     const analysis = await runAnalysis(goodId, mode !== "summary", force);
     response.json(jsonOk(analysis));
   } catch (error) {
-    response.status(400).json({ ok: false, error: getErrorMessage(error) });
+    sendJsonError(response, error, classifyAnalysisError(error));
   }
+});
+
+app.use("/api", (error: unknown, _request: Request, response: Response, next: NextFunction) => {
+  if (response.headersSent) {
+    next(error);
+    return;
+  }
+
+  sendJsonError(response, error);
+});
+
+app.use("/api", (_request, response) => {
+  response.status(404).json({ ok: false, error: "API route not found." });
 });
 
 if (existsSync(distDir)) {
@@ -2648,10 +3103,12 @@ if (existsSync(distDir)) {
 
 ensureDataDir()
   .then(async () => {
-    app.listen(port, () => {
+    app.listen(port, host, () => {
       // eslint-disable-next-line no-console
-      console.log(`CS2 monitor server listening on http://localhost:${port}`);
-      void scheduleNextRefresh(20_000, "startup");
+      console.log(`CS2 monitor server listening on http://${host}:${port}`);
+      void scheduleNextRefresh(20_000, "startup").catch((error) => {
+        refreshState.lastError = getErrorMessage(error);
+      });
     });
   })
   .catch((error) => {

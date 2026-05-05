@@ -1,11 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
-import type { AnalysisResponse, HistoryPlaybackResponse, WatchlistSummary } from "../types";
-
-interface ApiResponse<T> {
-  ok: boolean;
-  data?: T;
-  error?: string;
-}
+import type { AnalysisResponse, ApiResponse, HistoryPlaybackResponse, WatchlistSummary } from "../types";
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
@@ -204,10 +198,11 @@ export function useAnalysisData({
       if (goodId === selectedIdRef.current) return;
 
       const cachedAnalysis = analysisCacheRef.current[goodId];
-      if (cachedAnalysis) setAnalysis(cachedAnalysis);
+      setAnalysis(cachedAnalysis ?? null);
 
       const cachedHistory = historyCacheRef.current[goodId];
-      if (cachedHistory) setHistoryPlayback(cachedHistory);
+      setHistoryPlayback(cachedHistory ?? null);
+      selectedIdRef.current = goodId;
 
       startSwitchTransition(() => {
         setSelectedIdState(goodId);

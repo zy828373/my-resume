@@ -1,11 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { RefreshRuntimeStatus } from "../types";
-
-interface ApiResponse<T> {
-  ok: boolean;
-  data?: T;
-  error?: string;
-}
+import type { ApiResponse, RefreshRuntimeStatus } from "../types";
 
 async function requestJson<T>(url: string): Promise<T> {
   const response = await fetch(url);

@@ -1,17 +1,18 @@
-import { useCallback, useRef, useState } from "react";
-import type { AnalysisResponse, HolderDrilldownResponse } from "../types";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { AnalysisResponse, ApiResponse, HolderDrilldownResponse } from "../types";
 
-interface ApiResponse<T> {
-  ok: boolean;
-  data?: T;
-  error?: string;
-}
-
-async function requestJson<T>(url: string): Promise<T> {
-  const response = await fetch(url);
+async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, init);
   const json = (await response.json()) as ApiResponse<T>;
   if (!response.ok || !json.ok) throw new Error(json.error || "请求失败");
   return json.data as T;
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    (error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
 }
 
 type Holder = AnalysisResponse["holderInsights"][number];
@@ -33,12 +34,24 @@ export function useHolderDetail(): UseHolderDetailResult {
   const [holderDetailLoading, setHolderDetailLoading] = useState(false);
   const [holderDetailError, setHolderDetailError] = useState<string | null>(null);
   const holderPageSizeRef = useRef(24);
+  const holderRequestIdRef = useRef(0);
+  const holderAbortRef = useRef<AbortController | null>(null);
+
+  const cancelHolderRequest = useCallback(() => {
+    holderRequestIdRef.current += 1;
+    holderAbortRef.current?.abort();
+    holderAbortRef.current = null;
+  }, []);
 
   const loadHolderDetail = useCallback(
     async (
       target: { goodId: string; taskId: number; steamId?: string | null },
       page = 1,
     ) => {
+      cancelHolderRequest();
+      const requestId = holderRequestIdRef.current;
+      const controller = new AbortController();
+      holderAbortRef.current = controller;
       setHolderDetailLoading(true);
       setHolderDetailError(null);
 
@@ -51,17 +64,24 @@ export function useHolderDetail(): UseHolderDetailResult {
 
         const next = await requestJson<HolderDrilldownResponse>(
           `/api/items/${target.goodId}/holders/${target.taskId}?${query.toString()}`,
+          { signal: controller.signal },
         );
+        if (requestId !== holderRequestIdRef.current) return;
         setHolderDetail(next);
       } catch (caughtError) {
+        if (isAbortError(caughtError) || requestId !== holderRequestIdRef.current) return;
         setHolderDetailError(
           caughtError instanceof Error ? caughtError.message : "席位详情获取失败",
         );
       } finally {
+        if (requestId !== holderRequestIdRef.current) return;
+        if (holderAbortRef.current === controller) {
+          holderAbortRef.current = null;
+        }
         setHolderDetailLoading(false);
       }
     },
-    [],
+    [cancelHolderRequest],
   );
 
   const openHolderDetail = useCallback(
@@ -77,10 +97,13 @@ export function useHolderDetail(): UseHolderDetailResult {
   );
 
   const closeHolderDetail = useCallback(() => {
+    cancelHolderRequest();
     setHolderDetail(null);
     setHolderDetailError(null);
     setHolderDetailLoading(false);
-  }, []);
+  }, [cancelHolderRequest]);
+
+  useEffect(() => () => cancelHolderRequest(), [cancelHolderRequest]);
 
   return {
     holderDetail,

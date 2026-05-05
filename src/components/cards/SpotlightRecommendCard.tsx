@@ -12,6 +12,14 @@ import {
 
 type RecommendationCard = RecommendationResponse["positive"][number];
 
+const POOL_LABELS = {
+  candidate_core: "核心候选",
+  candidate_low_weight: "低权重",
+  watchlist: "观察池",
+  risk_only: "仅风险",
+  excluded: "已剔除",
+} as const;
+
 export interface SpotlightRecommendCardProps {
   card: RecommendationCard;
   rank: number;
@@ -32,6 +40,13 @@ export function SpotlightRecommendCard({
   const isAccent = card.recommendationType === "bottom_reversal";
   const spotColor = isAccent ? "var(--spot-warn)" : "var(--spot-accent)";
   const pillTone = isAccent ? "positive" : "warning";
+  const poolReasons = [
+    ...card.autonomousPool.keepReasons,
+    ...card.autonomousPool.downgradeReasons,
+    ...card.autonomousPool.excludeReasons,
+    ...card.autonomousPool.riskTags,
+  ].slice(0, 4);
+  const displayTags = [...card.hypeTags, ...poolReasons].slice(0, 5);
 
   return (
     <ShineBorder tone={isAccent ? "warn" : "accent"}>
@@ -48,6 +63,9 @@ export function SpotlightRecommendCard({
             <SignalPill tone={pillTone}>
               {recommendationTypeLabel(card.recommendationType)}
             </SignalPill>
+            <SignalPill tone={card.autonomousPool.pool === "risk_only" ? "negative" : "positive"}>
+              {POOL_LABELS[card.autonomousPool.pool]}
+            </SignalPill>
           </div>
           <div>
             <strong>{card.name}</strong>
@@ -61,6 +79,10 @@ export function SpotlightRecommendCard({
               综合 <AnimatedNumber value={card.score} />
             </span>
             <span>
+              准入 <AnimatedNumber value={card.autonomousPool.admissionScore} />
+            </span>
+            <span>供给 {card.autonomousPool.supplyGrade}</span>
+            <span>
               建仓 <AnimatedNumber value={card.entryScore} />
             </span>
             <span>
@@ -68,9 +90,9 @@ export function SpotlightRecommendCard({
             </span>
             <span>7天 {formatPercent(card.expected7dPct, 1)}</span>
           </div>
-          {card.hypeTags.length ? (
+          {displayTags.length ? (
             <div className="chip-row compact">
-              {card.hypeTags.slice(0, 3).map((tag) => (
+              {displayTags.map((tag) => (
                 <span className="muted-tag" key={`${card.goodId}-${tag}`}>
                   {tag}
                 </span>

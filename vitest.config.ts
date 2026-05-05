@@ -1,0 +1,110 @@
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({
+  test: {
+    environment: "node",
+    include: [
+      "server/**/*.test.ts",
+      "shared/**/*.test.ts",
+      "src/**/*.test.ts",
+      "src/**/*.test.tsx",
+    ],
+    coverage: {
+      provider: "v8",
+      reportsDirectory: "coverage",
+      include: [
+        "server/config-store.ts",
+        "server/history-store.ts",
+        "server/item-taxonomy.ts",
+        "server/csqaq-client.ts",
+        "server/csfloat-client.ts",
+        "server/env.ts",
+        "server/scanner-utils.ts",
+        "server/analytics.ts",
+        "server/autonomous-pool.ts",
+        "server/services/health.ts",
+        "server/analytics/primitives.ts",
+        "src/hooks/useHealthStatus.ts",
+      ],
+      exclude: ["server/**/*.test.ts", "server/index.ts"],
+      thresholds: {
+        statements: 1,
+        branches: 0,
+        functions: 1,
+        lines: 1,
+        "server/config-store.ts": {
+          statements: 70,
+          branches: 70,
+          functions: 70,
+          lines: 70,
+        },
+        "server/history-store.ts": {
+          statements: 70,
+          branches: 70,
+          functions: 70,
+          lines: 70,
+        },
+        "server/item-taxonomy.ts": {
+          statements: 70,
+          branches: 70,
+          functions: 70,
+          lines: 70,
+        },
+        "server/services/health.ts": {
+          statements: 70,
+          branches: 70,
+          functions: 70,
+          lines: 70,
+        },
+        "server/csqaq-client.ts": {
+          statements: 20,
+          branches: 8,
+          functions: 10,
+          lines: 20,
+        },
+        "server/csfloat-client.ts": {
+          statements: 30,
+          branches: 10,
+          functions: 25,
+          lines: 30,
+        },
+        "server/env.ts": {
+          statements: 70,
+          branches: 70,
+          functions: 70,
+          lines: 70,
+        },
+        "server/scanner-utils.ts": {
+          statements: 100,
+          branches: 90,
+          functions: 100,
+          lines: 100,
+        },
+        "server/analytics/primitives.ts": {
+          statements: 70,
+          branches: 70,
+          functions: 70,
+          lines: 70,
+        },
+        "src/hooks/useHealthStatus.ts": {
+          statements: 70,
+          branches: 70,
+          functions: 70,
+          lines: 70,
+        },
+        "server/analytics.ts": {
+          statements: 60,
+          branches: 45,
+          functions: 65,
+          lines: 60,
+        },
+        "server/autonomous-pool.ts": {
+          statements: 70,
+          branches: 60,
+          functions: 70,
+          lines: 70,
+        },
+      },
+    },
+  },
+});

@@ -1,6 +1,7 @@
 import { useDeferredValue, useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { useAnalysisData } from "./hooks/useAnalysisData";
 import { useConfig } from "./hooks/useConfig";
+import { useHealthStatus } from "./hooks/useHealthStatus";
 import { useHolderDetail } from "./hooks/useHolderDetail";
 import { useMarket } from "./hooks/useMarket";
 import { usePortfolio } from "./hooks/usePortfolio";
@@ -22,6 +23,7 @@ import { AppShell } from "./components/layout";
 import type { StatusPillTone } from "./components/layout";
 import { MarketCard } from "./components/cards/MarketCard";
 import { HolderDetailModal } from "./components/cards/HolderDetailModal";
+import { HealthPage } from "./components/pages/HealthPage";
 import { HoldersPage } from "./components/pages/HoldersPage";
 import { MarketPage } from "./components/pages/MarketPage";
 import { PortfolioPage } from "./components/pages/PortfolioPage";
@@ -30,6 +32,7 @@ import { WatchlistPage } from "./components/pages/WatchlistPage";
 import { formatDateTime } from "./utils/format";
 import type {
   AnalysisResponse,
+  ApiResponse,
   ConfigResponse,
   HolderDrilldownResponse,
   HistoryPlaybackResponse,
@@ -42,12 +45,6 @@ import type {
   SearchSuggestion,
   WatchlistSummary,
 } from "./types";
-
-type ApiResponse<T> = {
-  ok: boolean;
-  data?: T;
-  error?: string;
-};
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
@@ -329,7 +326,7 @@ function getHash() {
 
 function App() {
   const [activePage, setActivePage] = useState<
-    "market" | "watchlist" | "holders" | "recommendations" | "portfolio"
+    "market" | "watchlist" | "holders" | "recommendations" | "portfolio" | "health"
   >("watchlist");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -366,6 +363,13 @@ function App() {
   const { refreshStatus, refreshRuntimeStatus } = useRuntimeStatus({
     configured: Boolean(config?.configured),
   });
+  const {
+    healthStatus,
+    healthStatusLoading,
+    healthStatusError,
+    healthStatusStale,
+    refreshHealthStatus,
+  } = useHealthStatus({ enabled: true });
 
   const {
     recommendations,
@@ -446,7 +450,12 @@ function App() {
 
   async function bootstrap() {
     try {
-      await Promise.all([refreshConfig(), refreshMarketOverview(), refreshRuntimeStatus()]);
+      await Promise.all([
+        refreshConfig(),
+        refreshMarketOverview(),
+        refreshRuntimeStatus(),
+        refreshHealthStatus(),
+      ]);
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : "初始化失败");
     }
@@ -469,6 +478,12 @@ function App() {
     marketAnalysisError,
     refreshMarketAnalysis,
   ]);
+
+  useEffect(() => {
+    if (activePage === "health") {
+      void refreshHealthStatus();
+    }
+  }, [activePage, refreshHealthStatus]);
 
   useEffect(() => {
     if (config?.configured && config.watchlist.length > 0) {
@@ -534,6 +549,7 @@ function App() {
           method: "POST",
         });
         await refreshRuntimeStatus();
+        await refreshHealthStatus();
         await refreshWatchlist();
         await refreshRecommendations();
 
@@ -684,7 +700,7 @@ function App() {
             : `正在按窗口 ${scannerWindowLabel} 抽样 ${scannerStatus.randomSampleSize} 个标的`
         : "等待首次扫描";
   const pageTabs: Array<{
-    key: "market" | "watchlist" | "holders" | "recommendations" | "portfolio";
+    key: "market" | "watchlist" | "holders" | "recommendations" | "portfolio" | "health";
     label: string;
     hint: string;
     count: number | null;
@@ -699,6 +715,7 @@ function App() {
       count: topRecommendedCards.length,
     },
     { key: "portfolio", label: "我的持仓", hint: "登记成本 / AI 建议", count: portfolio.length },
+    { key: "health", label: "运行状态", hint: "服务 / 数据源 / 快照", count: healthStatus?.snapshots.rowCount ?? null },
   ];
 
   const liveAlerts = filteredWatchlist
@@ -863,6 +880,15 @@ function App() {
           setPortfolioForm={setPortfolioForm}
           onSavePortfolio={() => void handleSavePortfolio()}
           onDeletePortfolio={(id) => void handleDeletePortfolio(id)}
+        />
+      )}
+      {activePage === "health" && (
+        <HealthPage
+          healthStatus={healthStatus}
+          healthStatusLoading={healthStatusLoading}
+          healthStatusError={healthStatusError}
+          healthStatusStale={healthStatusStale}
+          onRefresh={() => void refreshHealthStatus()}
         />
       )}
       <HolderDetailModal

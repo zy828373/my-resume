@@ -5,8 +5,21 @@ import {
   buildItemTagProfile,
   DEFAULT_HOLO_STICKER_SERIES,
   DEFAULT_RECOMMENDATION_SCOPES,
-  tagProfileMatchesScanner,
 } from "./item-taxonomy.js";
+import {
+  evaluateAutonomousPoolDecision,
+  isAutonomousPoolVisible,
+} from "./autonomous-pool.js";
+import {
+  average,
+  averageLast,
+  calcKdj,
+  calcMacd,
+  clamp,
+  movingAverage,
+  percentageChange,
+  standardDeviation,
+} from "./analytics/primitives.js";
 import type {
   AlertSignal,
   AnalysisResponse,
@@ -35,41 +48,6 @@ import type {
   TrendDelta,
   WatchlistSummary,
 } from "./types.js";
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function average(values: number[]) {
-  if (!values.length) {
-    return 0;
-  }
-
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
-}
-
-function averageLast(values: number[], count: number) {
-  return average(values.slice(-count));
-}
-
-function percentageChange(current: number | null, previous: number | null) {
-  if (current == null || previous == null || previous === 0) {
-    return null;
-  }
-
-  return ((current - previous) / previous) * 100;
-}
-
-function standardDeviation(values: number[]) {
-  if (values.length < 2) {
-    return 0;
-  }
-
-  const mean = average(values);
-  const variance =
-    values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
-  return Math.sqrt(variance);
-}
 
 function formatCount(value: number | null, digits = 0) {
   if (value == null || Number.isNaN(value)) {
@@ -216,65 +194,6 @@ function sharePct(part: number | null, total: number | null) {
   }
 
   return Number(((part / total) * 100).toFixed(2));
-}
-
-function movingAverage(values: number[], period: number) {
-  return values.map((_, index) => {
-    if (index < period - 1) {
-      return null;
-    }
-
-    const slice = values.slice(index - period + 1, index + 1);
-    return Number(average(slice).toFixed(2));
-  });
-}
-
-function ema(values: number[], period: number) {
-  if (!values.length) {
-    return [];
-  }
-
-  const multiplier = 2 / (period + 1);
-  const result = [values[0]];
-
-  for (let index = 1; index < values.length; index += 1) {
-    result.push((values[index] - result[index - 1]) * multiplier + result[index - 1]);
-  }
-
-  return result;
-}
-
-function calcMacd(values: number[]) {
-  const ema12 = ema(values, 12);
-  const ema26 = ema(values, 26);
-  const dif = values.map((_, index) => Number((ema12[index] - ema26[index]).toFixed(4)));
-  const dea = ema(dif, 9).map((value) => Number(value.toFixed(4)));
-  const hist = dif.map((value, index) => Number(((value - dea[index]) * 2).toFixed(4)));
-  return { dif, dea, hist };
-}
-
-function calcKdj(candles: ChartCandle[]) {
-  const k: number[] = [];
-  const d: number[] = [];
-  const j: number[] = [];
-  let currentK = 50;
-  let currentD = 50;
-
-  candles.forEach((candle, index) => {
-    const start = Math.max(0, index - 8);
-    const window = candles.slice(start, index + 1);
-    const highest = Math.max(...window.map((row) => row.h));
-    const lowest = Math.min(...window.map((row) => row.l));
-    const rsv = highest === lowest ? 50 : ((candle.c - lowest) / (highest - lowest)) * 100;
-    currentK = (2 * currentK + rsv) / 3;
-    currentD = (2 * currentD + currentK) / 3;
-    const currentJ = 3 * currentK - 2 * currentD;
-    k.push(Number(currentK.toFixed(2)));
-    d.push(Number(currentD.toFixed(2)));
-    j.push(Number(currentJ.toFixed(2)));
-  });
-
-  return { k, d, j };
 }
 
 function formatDateLabel(timestamp: number) {
@@ -1024,6 +943,36 @@ function buildTaxonomy(
     };
   }
 
+  if (tagProfile.itemTypeKey === "weapon_case") {
+    return {
+      categoryKey: "weapon_case",
+      categoryLabel: "武器箱板块",
+      segmentKey: tagProfile.isRareDropSource || tagProfile.isDiscontinuedCandidate ? "rare_or_discontinued_case" : "case_generic",
+      segmentLabel: tagProfile.isRareDropSource || tagProfile.isDiscontinuedCandidate ? "稀有/停产箱" : "普通武器箱",
+      spotlight: "武器箱不套用存世量过滤，重点看是否仍在常规掉落、成交承接和开箱需求。",
+    };
+  }
+
+  if (tagProfile.itemTypeKey === "capsule" || tagProfile.originKey === "capsule") {
+    return {
+      categoryKey: "capsule",
+      categoryLabel: "胶囊板块",
+      segmentKey: tagProfile.stickerSeriesKey ?? tagProfile.sourceSeriesKey ?? "capsule_generic",
+      segmentLabel: tagProfile.stickerSeriesLabel ?? tagProfile.sourceSeriesLabel ?? "胶囊",
+      spotlight: "胶囊需要同时看释放量、消耗速度和内含目标贴纸质量。",
+    };
+  }
+
+  if (["collectible", "patch", "charm"].includes(tagProfile.itemTypeKey)) {
+    return {
+      categoryKey: "collectible",
+      categoryLabel: "收藏品板块",
+      segmentKey: tagProfile.itemTypeKey,
+      segmentLabel: tagProfile.itemTypeLabel,
+      spotlight: "收藏品先看稳定成交、低在售、稀缺叙事和替代品压力。",
+    };
+  }
+
   if (
     tagProfile.itemTypeKey === "gun" ||
     detail.weapon ||
@@ -1067,121 +1016,17 @@ function evaluateAutonomousRecommendationEligibility(
   analysis: AnalysisResponse,
   scanner?: Pick<ScannerConfig, "analysisScopes" | "holoStickerSeries"> | null,
 ): AutonomousEligibility {
-  const nameText = normalizeItemText(analysis.item.name);
-  const statistic = analysis.statistic.current;
-  const tagProfile = analysis.tagProfile;
-
-  if (tagProfile.isStatTrak || isStatTrakName(nameText)) {
-    return {
-      passed: false,
-      summary: "StatTrak™ 标的不纳入自主推荐池",
-      reasons: ["当前标的带有 StatTrak™ 标签，当前自主推荐优先普通非 ST 标的。"],
-    };
-  }
-
-  if (!tagProfileMatchesScanner(tagProfile, scanner)) {
-    return {
-      passed: false,
-      summary: "不在当前筛选分析范围",
-      reasons: ["当前标的标签没有命中你在自主推荐池中选择的分析范围。"],
-    };
-  }
-
-  if (tagProfile.recommendationScopes.includes("holo_team_sticker")) {
-    if (tagProfile.stickerFinishKey !== "holo" && !isHoloStickerName(nameText)) {
-      return {
-        passed: false,
-        summary: "非全息贴纸不纳入自主推荐池",
-        reasons: ["当前贴纸不是全息品质，已按规则剔除。"],
-      };
-    }
-
-    if (!tagProfile.isTeamSticker || tagProfile.isPlayerSignature) {
-      return {
-        passed: false,
-        summary: "仅保留全息战队贴纸",
-        reasons: ["当前贴纸更像选手签名或非战队题材，不进入自主推荐池。"],
-      };
-    }
-
-    return {
-      passed: true,
-      summary: "全息战队贴纸进入自主推荐池",
-      reasons: [
-        `当前贴纸满足“全息 + 战队题材 + ${tagProfile.stickerSeriesLabel ?? "年份未识别"}”的自主推荐条件。`,
-      ],
-    };
-  }
-
-  if (
-    tagProfile.recommendationScopes.includes("gun_skin") ||
-    tagProfile.recommendationScopes.includes("discontinued_collection_skin")
-  ) {
-    if (statistic == null) {
-      return {
-        passed: false,
-        summary: "枪皮缺少存世量数据",
-        reasons: ["当前枪皮还没拿到稳定存世量，先不放入自主推荐池。"],
-      };
-    }
-
-    if (statistic < 2_000 || statistic > 40_000) {
-      return {
-        passed: false,
-        summary: "枪皮存世量不在 2000-40000 区间",
-        reasons: ["当前存世量 " + formatCount(statistic) + "，未落在你指定的枪皮观察区间。"],
-      };
-    }
-
-    return {
-      passed: true,
-      summary: "枪皮存世量命中目标区间",
-      reasons: [
-        "当前存世量 " +
-          formatCount(statistic) +
-          "，处于 2000-40000 的观察区间；题材适配分 " +
-          tagProfile.hypeFitScore +
-          "。",
-      ],
-    };
-  }
-
-  if (analysis.taxonomy.categoryKey === "glove") {
-    if (statistic == null) {
-      return {
-        passed: false,
-        summary: "手套缺少存世量数据",
-        reasons: ["当前手套还没拿到稳定存世量，先不放入自主推荐池。"],
-      };
-    }
-
-    if (statistic < 2_000 || statistic > 7_000) {
-      return {
-        passed: false,
-        summary: "手套存世量不在 2000-7000 区间",
-        reasons: ["当前存世量 " + formatCount(statistic) + "，未落在你指定的手套观察区间。"],
-      };
-    }
-
-    return {
-      passed: true,
-      summary: "手套存世量命中目标区间",
-      reasons: ["当前存世量 " + formatCount(statistic) + "，处于 2000-7000 的观察区间。"],
-    };
-  }
-
-  if (tagProfile.recommendationScopes.includes("agent")) {
-    return {
-      passed: true,
-      summary: "探员板块直接纳入自主推荐池",
-      reasons: ["当前标的是探员题材，按规则直接进入自主推荐池。"],
-    };
-  }
-
+  const decision = scanner == null
+    ? (analysis.autonomousPool ?? evaluateAutonomousPoolDecision(analysis, scanner))
+    : evaluateAutonomousPoolDecision(analysis, scanner);
   return {
-    passed: false,
-    summary: "当前板块不在自主推荐范围",
-    reasons: ["当前仅纳入探员、全息战队贴纸、枪皮和绝版收藏品枪皮。"],
+    passed: isAutonomousPoolVisible(decision),
+    summary: decision.summary,
+    reasons: [
+      ...decision.keepReasons,
+      ...decision.downgradeReasons,
+      ...decision.excludeReasons,
+    ],
   };
 }
 
@@ -2164,13 +2009,22 @@ export function buildRecommendationCard(
   analysis: AnalysisResponse,
   scanner?: Pick<ScannerConfig, "analysisScopes" | "holoStickerSeries"> | null,
 ): RecommendationCard | null {
-  const eligibility = evaluateAutonomousRecommendationEligibility(analysis, scanner);
+  const autonomousPool = scanner == null
+    ? (analysis.autonomousPool ?? evaluateAutonomousPoolDecision(analysis, scanner))
+    : evaluateAutonomousPoolDecision(analysis, scanner);
+  const eligibility = evaluateAutonomousRecommendationEligibility(
+    { ...analysis, autonomousPool },
+    scanner,
+  );
   if (!eligibility.passed) {
     return null;
   }
 
   let recommendationType: RecommendationCard["recommendationType"] = "trend_follow";
-  let score = analysis.scores.entryScore + analysis.tagProfile.hypeFitScore * 0.18;
+  let score =
+    analysis.scores.entryScore +
+    analysis.tagProfile.hypeFitScore * 0.18 +
+    autonomousPool.admissionScore * 0.35;
   let reason = analysis.strategy.actionSummary;
   const triggerTags: string[] = [];
 
@@ -2197,6 +2051,12 @@ export function buildRecommendationCard(
     score = analysis.scores.dumpRiskScore;
     reason = "风险侧更强，建议优先放进规避清单而不是推荐清单。";
     triggerTags.push("高风险规避");
+  }
+  if (autonomousPool.pool === "risk_only") {
+    recommendationType = "risk_avoid";
+    score = Math.max(score, analysis.scores.dumpRiskScore, autonomousPool.admissionScore);
+    reason = autonomousPool.summary;
+    triggerTags.push("仅风险观察");
   }
 
   const likelyMotives =
@@ -2250,6 +2110,10 @@ export function buildRecommendationCard(
     topHolders: analysis.holderInsights.slice(0, 4),
     dataPoints: uniq([
       eligibility.summary,
+      `推荐池 ${autonomousPool.pool} / 准入 ${autonomousPool.admissionScore}`,
+      autonomousPool.supplyGrade !== "NA" ? `供给等级 ${autonomousPool.supplyGrade}` : null,
+      ...autonomousPool.keepReasons.slice(0, 2),
+      ...autonomousPool.downgradeReasons.slice(0, 2),
       `题材适配 ${analysis.tagProfile.hypeFitScore}`,
       analysis.taxonomy.categoryLabel + " / " + analysis.taxonomy.segmentLabel,
       "建仓 " + analysis.scores.entryScore + "，风险 " + analysis.scores.dumpRiskScore,
@@ -2262,9 +2126,11 @@ export function buildRecommendationCard(
     ]),
     triggerTags: uniq([
       ...triggerTags,
+      ...autonomousPool.riskTags.slice(0, 3),
       ...analysis.tagProfile.hypeTags.slice(0, 4),
       analysis.earlyAccumulation.state === "watch" ? "提前建仓观察" : null,
     ]),
+    autonomousPool,
   };
 }
 
@@ -2318,8 +2184,10 @@ export function buildRecommendationResponse(
   const positive = cards
     .filter(
       (card) =>
+        (card.autonomousPool.pool === "candidate_core" ||
+          card.autonomousPool.pool === "candidate_low_weight") &&
         card.recommendationType !== "risk_avoid" &&
-        (card.entryScore >= 35 || card.recommendationType === "bottom_reversal"),
+        card.dumpRiskScore < 90,
     )
     .sort(
       (left, right) =>
@@ -2332,9 +2200,8 @@ export function buildRecommendationResponse(
   const watch = cards
     .filter(
       (card) =>
+        card.autonomousPool.pool === "watchlist" &&
         card.recommendationType !== "risk_avoid" &&
-        card.entryScore >= 0 &&
-        card.entryScore < 35 &&
         card.dumpRiskScore < 90,
     )
     .sort(
@@ -2346,7 +2213,7 @@ export function buildRecommendationResponse(
     )
     .slice(0, recommendationLimit);
   const risk = cards
-    .filter((card) => card.recommendationType === "risk_avoid" || card.dumpRiskScore >= 90)
+    .filter((card) => card.autonomousPool.pool === "risk_only" || card.recommendationType === "risk_avoid" || card.dumpRiskScore >= 90)
     .sort((left, right) => right.dumpRiskScore - left.dumpRiskScore || right.score - left.score)
     .slice(0, recommendationLimit);
   const featured = positive.slice(0, featuredLimit);
@@ -3361,7 +3228,7 @@ export async function analyzeItem(
     snapshotsAvailable: persistedSnapshots.length,
   });
 
-  return applyPushSignal({
+  const analysis = applyPushSignal({
     item: {
       goodId,
       name: detail.name,
@@ -3459,4 +3326,8 @@ export async function analyzeItem(
     },
     summary,
   });
+  return {
+    ...analysis,
+    autonomousPool: evaluateAutonomousPoolDecision(analysis),
+  };
 }

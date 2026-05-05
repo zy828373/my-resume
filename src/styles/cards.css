@@ -802,6 +802,13 @@
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+@media (max-width: 1120px) {
+  .scanner-summary-grid,
+  .scanner-summary-grid-wide {
+    grid-template-columns: 1fr;
+  }
+}
+
 .scanner-card {
   padding: 10px 12px;
   border: 1px solid var(--line);

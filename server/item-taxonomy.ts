@@ -11,6 +11,11 @@ export const DEFAULT_RECOMMENDATION_SCOPES: RecommendationScopeKey[] = [
   "holo_team_sticker",
   "gun_skin",
   "discontinued_collection_skin",
+  "knife_glove",
+  "covert_tradeup",
+  "weapon_case",
+  "capsule",
+  "collectible",
 ];
 
 export const DEFAULT_HOLO_STICKER_SERIES: StickerSeriesKey[] = [
@@ -28,6 +33,11 @@ export const RECOMMENDATION_SCOPE_LABELS: Record<RecommendationScopeKey, string>
   holo_team_sticker: "全息战队贴纸板块",
   gun_skin: "枪皮板块",
   discontinued_collection_skin: "绝版收藏品枪皮板块",
+  knife_glove: "刀手套板块",
+  covert_tradeup: "红皮炼金燃料",
+  weapon_case: "武器箱板块",
+  capsule: "胶囊板块",
+  collectible: "收藏品板块",
 };
 
 export const HOLO_STICKER_SERIES_LABELS: Record<StickerSeriesKey, string> = {
@@ -155,9 +165,6 @@ const TEAM_STICKER_TOKENS = [
   "betboom",
   "passion ua",
   "ninjas in pyjamas",
-  "gaming",
-  "esports",
-  "team",
 ];
 
 const PLAYER_SIGNATURE_TOKENS = [
@@ -315,11 +322,14 @@ function resolveItemType(detail: NormalizedDetail, text: string): Pick<ItemTagPr
   if (includesAny(normalized, ["glove", "手套", "hand wraps", "bloodhound", "hydra", "broken fang"])) {
     return { itemTypeKey: "glove", itemTypeLabel: "手套", weaponClassKey: null };
   }
-  if (includesAny(normalized, ["sticker", "印花"])) {
-    return { itemTypeKey: "sticker", itemTypeLabel: "印花", weaponClassKey: null };
-  }
   if (includesAny(normalized, ["agent", "探员", "特工", "terrorist", "counter-terrorist"])) {
     return { itemTypeKey: "agent", itemTypeLabel: "探员", weaponClassKey: null };
+  }
+  if (includesAny(normalized, ["capsule", "胶囊"])) {
+    return { itemTypeKey: "capsule", itemTypeLabel: "胶囊", weaponClassKey: null };
+  }
+  if (includesAny(normalized, ["sticker", "印花"])) {
+    return { itemTypeKey: "sticker", itemTypeLabel: "印花", weaponClassKey: null };
   }
   if (includesAny(normalized, ["music kit", "音乐盒", "音乐集"])) {
     return { itemTypeKey: "music_kit", itemTypeLabel: "音乐盒", weaponClassKey: null };
@@ -628,6 +638,8 @@ function resolveRecommendationScopes(profile: Omit<ItemTagProfile, "recommendati
   const isGoodSupply = profile.supplyBandKey === "2k_40k";
   const isTargetWear = ["factory_new", "minimal_wear", "field_tested"].includes(profile.wearKey ?? "");
   const isNormalGun = profile.itemTypeKey === "gun" && !profile.isStatTrak && !profile.isSouvenir;
+  const rarityText = `${profile.rarityKey ?? ""} ${profile.rarityLabel ?? ""}`.toLowerCase();
+  const isCovert = isNormalGun && includesAny(rarityText, ["covert", "隐秘", "绝密"]);
 
   if (profile.itemTypeKey === "agent") scopes.push("agent");
   if (profile.stickerFinishKey === "holo" && profile.isTeamSticker && !profile.isPlayerSignature) {
@@ -637,6 +649,11 @@ function resolveRecommendationScopes(profile: Omit<ItemTagProfile, "recommendati
   if (isNormalGun && isGoodSupply && isTargetWear && profile.isDiscontinuedCandidate) {
     scopes.push("discontinued_collection_skin");
   }
+  if (profile.itemTypeKey === "knife" || profile.itemTypeKey === "glove") scopes.push("knife_glove");
+  if (isCovert) scopes.push("covert_tradeup");
+  if (profile.itemTypeKey === "weapon_case") scopes.push("weapon_case");
+  if (profile.itemTypeKey === "capsule" || profile.originKey === "capsule") scopes.push("capsule");
+  if (["collectible", "patch", "charm"].includes(profile.itemTypeKey)) scopes.push("collectible");
 
   return scopes;
 }
@@ -745,6 +762,20 @@ export function candidateMatchesScannerScopes(
   const series = normalizeHoloStickerSeries(scanner?.holoStickerSeries);
   if (includesAny(text, ["stattrak", "stat trak"])) return false;
   if (scopes.includes("agent") && includesAny(text, ["agent", "探员", "特工"])) return true;
+  if (
+    scopes.includes("weapon_case") &&
+    includesAny(text, [" weapon case", " case", "武器箱"]) &&
+    !includesAny(text, ["case hardened"])
+  ) {
+    return true;
+  }
+  if (scopes.includes("capsule") && includesAny(text, ["capsule", "胶囊"])) return true;
+  if (
+    scopes.includes("knife_glove") &&
+    includesAny(text, ["knife", "bayonet", "karambit", "glove", "手套", "匕首", "刺刀"])
+  ) {
+    return true;
+  }
   if (scopes.includes("holo_team_sticker") && includesAny(text, ["sticker", "印花"]) && includesAny(text, ["holo", "全息"])) {
     const stickerSeries = resolveStickerSeries(text) ?? "other";
     return series.includes(stickerSeries);
@@ -755,6 +786,12 @@ export function candidateMatchesScannerScopes(
     !includesAny(text, ["souvenir", "纪念品", "sticker", "印花"])
   ) {
     return true;
+  }
+  if (scopes.includes("covert_tradeup")) {
+    return includesAny(text, GUN_WEAPON_TOKENS) && !includesAny(text, ["souvenir", "纪念品", "stattrak"]);
+  }
+  if (scopes.includes("collectible")) {
+    return includesAny(text, ["collection", "collectible", "patch", "charm", "收藏品", "布章", "挂件"]);
   }
   return false;
 }

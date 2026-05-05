@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import * as echarts from "echarts";
 import type { EChartsOption } from "echarts";
+import type { EChartsType } from "echarts/core";
 import { HoveringChartContext } from "./HoveringChartContext";
 
 export interface EChartPanelProps {
@@ -15,27 +15,61 @@ export interface EChartPanelProps {
  */
 export function EChartPanel({ option, height }: EChartPanelProps) {
   const ref = useRef<HTMLDivElement | null>(null);
-  const chartRef = useRef<echarts.ECharts | null>(null);
+  const chartRef = useRef<EChartsType | null>(null);
+  const optionRef = useRef(option);
   const [hovering, setHovering] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
 
   useEffect(() => {
-    if (!ref.current) return;
-    const chart = echarts.init(ref.current, undefined, { renderer: "canvas" });
-    chartRef.current = chart;
+    let disposed = false;
+    let resizeObserver: ResizeObserver | null = null;
 
-    const resizeObserver = new ResizeObserver(() => chart.resize());
-    resizeObserver.observe(ref.current);
+    async function mountChart() {
+      if (!ref.current) return;
+
+      try {
+        setLoadError(null);
+        const { createEChart } = await import("./loadEcharts");
+        if (!ref.current || disposed) return;
+
+        const chart = createEChart(ref.current);
+        chartRef.current = chart;
+        chart.setOption(optionRef.current, { notMerge: true, lazyUpdate: true });
+
+        resizeObserver = new ResizeObserver(() => chart.resize());
+        resizeObserver.observe(ref.current);
+      } catch (error) {
+        if (!disposed) {
+          resizeObserver?.disconnect();
+          chartRef.current?.dispose();
+          chartRef.current = null;
+          setLoadError(error instanceof Error ? error.message : String(error));
+        }
+      }
+    }
+
+    void mountChart();
 
     return () => {
-      resizeObserver.disconnect();
-      chart.dispose();
+      disposed = true;
+      resizeObserver?.disconnect();
+      chartRef.current?.dispose();
       chartRef.current = null;
     };
-  }, []);
+  }, [retryKey]);
 
   useEffect(() => {
+    optionRef.current = option;
     if (!chartRef.current) return;
-    chartRef.current.setOption(option, { notMerge: true, lazyUpdate: true });
+    try {
+      chartRef.current.setOption(option, { notMerge: true, lazyUpdate: true });
+      setLoadError(null);
+    } catch (error) {
+      chartRef.current.dispose();
+      chartRef.current = null;
+      setLoadError(error instanceof Error ? error.message : String(error));
+    }
   }, [option]);
 
   return (
@@ -46,7 +80,16 @@ export function EChartPanel({ option, height }: EChartPanelProps) {
         style={{ width: "100%", height }}
         onMouseEnter={() => setHovering(true)}
         onMouseLeave={() => setHovering(false)}
-      />
+      >
+        {loadError ? (
+          <span className="chart-error" role="alert">
+            图表加载失败：{loadError}
+            <button type="button" onClick={() => setRetryKey((key) => key + 1)}>
+              重试加载图表
+            </button>
+          </span>
+        ) : null}
+      </div>
     </HoveringChartContext.Provider>
   );
 }

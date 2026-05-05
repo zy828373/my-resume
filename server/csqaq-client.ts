@@ -12,6 +12,11 @@ import type {
 
 const BASE_URL = "https://api.csqaq.com/api/v1";
 const REQUEST_GAP_MS = 1200;
+const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
+const requestTimeoutMs = parsePositiveInteger(
+  process.env.CSQAQ_REQUEST_TIMEOUT_MS,
+  DEFAULT_REQUEST_TIMEOUT_MS,
+);
 // Follow the same successful public chart mapping used by the previous local project:
 // 1 = BUFF, 2 = 悠悠有品.
 const PLATFORM_CANDIDATES = [1, 2] as const;
@@ -30,8 +35,29 @@ type ApiEnvelope<T> = {
 let requestChain = Promise.resolve();
 let lastRequestFinishedAt = 0;
 
+function parsePositiveInteger(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isAbortError(error: unknown) {
+  return (
+    (error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
+}
+
+function createHttpError(message: string, status: number) {
+  const error = new Error(message) as Error & { status?: number; statusCode?: number };
+  if (status >= 400 && status <= 599) {
+    error.status = status;
+    error.statusCode = status;
+  }
+  return error;
 }
 
 function nullableNumber(value: unknown): number | null {
@@ -70,7 +96,7 @@ function toErrorMessage(payload: unknown, status: number) {
   }
 
   if (payload && typeof payload === "object" && "msg" in payload) {
-    return String((payload as { msg?: unknown }).msg ?? `HTTP ${status}`);
+    return `HTTP ${status}: ${String((payload as { msg?: unknown }).msg ?? "upstream error")}`;
   }
 
   return `HTTP ${status}`;
@@ -99,21 +125,40 @@ export class CsqaqClient {
       }
 
       let response: Response | null = null;
+      let text = "";
       let lastFetchError: unknown;
       for (let attempt = 0; attempt < 3; attempt += 1) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
+        const relayAbort = () => controller.abort();
+        init?.signal?.addEventListener("abort", relayAbort, { once: true });
+
         try {
+          if (init?.signal?.aborted) {
+            controller.abort();
+          }
+
           response = await fetch(`${BASE_URL}${path}`, {
             ...init,
             headers,
+            signal: controller.signal,
           });
+          text = await response.text();
           break;
         } catch (error) {
+          if (isAbortError(error)) {
+            throw new Error("CSQAQ 请求超时，请稍后重试。");
+          }
+
           lastFetchError = error;
           if (attempt >= 2) {
             throw error;
           }
 
           await sleep(800 * (attempt + 1));
+        } finally {
+          clearTimeout(timeout);
+          init?.signal?.removeEventListener("abort", relayAbort);
         }
       }
 
@@ -121,7 +166,6 @@ export class CsqaqClient {
         throw lastFetchError instanceof Error ? lastFetchError : new Error("CSQAQ 请求失败");
       }
 
-      const text = await response.text();
       let payload: ApiEnvelope<T> | null = null;
 
       if (text) {
@@ -130,25 +174,26 @@ export class CsqaqClient {
         } catch {
           const htmlLike = text.trimStart().startsWith("<");
           if (response.status === 429) {
-            throw new Error("CSQAQ 接口触发频率限制，请 2 到 5 秒后重试。");
+            throw createHttpError("CSQAQ 接口触发频率限制，请 2 到 5 秒后重试。", response.status);
           }
 
           if (htmlLike) {
-            throw new Error(
+            throw createHttpError(
               `CSQAQ 返回了 HTML 页面（HTTP ${response.status}），可能是限流或风控拦截，请稍后重试。`,
+              response.status,
             );
           }
 
-          throw new Error(`CSQAQ 返回了非 JSON 响应（${response.status}）`);
+          throw createHttpError(`CSQAQ 返回了非 JSON 响应（${response.status}）`, response.status);
         }
       }
 
       if (!response.ok || !payload) {
-        throw new Error(toErrorMessage(payload, response.status));
+        throw createHttpError(toErrorMessage(payload, response.status), response.status);
       }
 
       if (typeof payload.code === "number" && payload.code >= 400) {
-        throw new Error(payload.msg || "CSQAQ 接口返回异常");
+        throw createHttpError(payload.msg || "CSQAQ 接口返回异常", payload.code);
       }
 
       return payload;

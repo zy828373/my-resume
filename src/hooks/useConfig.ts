@@ -1,16 +1,11 @@
 import { useCallback, useState } from "react";
 import type {
+  ApiResponse,
   ConfigResponse,
   RecommendationScopeKey,
   ScannerConfig,
   StickerSeriesKey,
 } from "../types";
-
-interface ApiResponse<T> {
-  ok: boolean;
-  data?: T;
-  error?: string;
-}
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
@@ -21,6 +16,8 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
 
 export interface ScannerForm {
   enabled: boolean;
+  candidatePages: string;
+  candidatePageSize: string;
   deepAnalyzeLimit: string;
   recommendationLimit: string;
   featuredLimit: string;
@@ -36,6 +33,11 @@ export const DEFAULT_ANALYSIS_SCOPES: RecommendationScopeKey[] = [
   "holo_team_sticker",
   "gun_skin",
   "discontinued_collection_skin",
+  "knife_glove",
+  "covert_tradeup",
+  "weapon_case",
+  "capsule",
+  "collectible",
 ];
 
 export const DEFAULT_HOLO_STICKER_SERIES: StickerSeriesKey[] = [
@@ -51,6 +53,8 @@ export const DEFAULT_HOLO_STICKER_SERIES: StickerSeriesKey[] = [
 export function createScannerForm(scanner?: ScannerConfig | null): ScannerForm {
   return {
     enabled: scanner?.enabled ?? true,
+    candidatePages: String(scanner?.candidatePages ?? 2),
+    candidatePageSize: String(scanner?.candidatePageSize ?? 24),
     deepAnalyzeLimit: String(scanner?.deepAnalyzeLimit ?? 15),
     recommendationLimit: String(scanner?.recommendationLimit ?? 15),
     featuredLimit: String(scanner?.featuredLimit ?? 3),
@@ -187,6 +191,8 @@ export function useConfig({ onMessage, onError, onConfigLoaded }: UseConfigOptio
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           enabled: scannerForm.enabled,
+          candidatePages: Number(scannerForm.candidatePages),
+          candidatePageSize: Number(scannerForm.candidatePageSize),
           deepAnalyzeLimit: Number(scannerForm.deepAnalyzeLimit),
           recommendationLimit: Number(scannerForm.recommendationLimit),
           featuredLimit: Number(scannerForm.featuredLimit),

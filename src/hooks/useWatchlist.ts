@@ -1,11 +1,5 @@
 import { useCallback, useState } from "react";
-import type { WatchlistSummary } from "../types";
-
-interface ApiResponse<T> {
-  ok: boolean;
-  data?: T;
-  error?: string;
-}
+import type { ApiResponse, WatchlistSummary } from "../types";
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
