@@ -57,10 +57,10 @@ Default URLs:
 - Backend API: `http://127.0.0.1:8787/`
 
 ## First Setup On Another Computer
-Use this when the remote repository exists:
+Use this to clone the upgraded CS2 monitor branch:
 
 ```powershell
-git clone <REPO_URL> csgo
+git clone --branch cs2-monitor-upgrade https://github.com/zy828373/my-resume csgo
 cd csgo
 npm ci
 Copy-Item .env.example .env
@@ -79,8 +79,8 @@ Use this when the other computer already cloned the repo:
 ```powershell
 cd <EXISTING_REPO_PATH>
 git fetch origin
-git checkout master
-git pull --ff-only origin master
+git checkout cs2-monitor-upgrade
+git pull --ff-only origin cs2-monitor-upgrade
 npm ci
 npm exec tsc -- --noEmit
 npm test
@@ -88,21 +88,23 @@ npm run build
 ```
 
 ## Uploading From This Computer
-This local repo currently needs a remote before it can push. After creating an empty GitHub/Gitee repository, run:
+The GitHub repository currently has an existing independent `main` history, so this upgrade is pushed to a safe branch named `cs2-monitor-upgrade`.
 
 ```powershell
 cd J:\csgo
-git remote add origin <REPO_URL>
-git push -u origin master
+git remote add origin https://github.com/zy828373/my-resume
+git push -u origin master:cs2-monitor-upgrade
 ```
 
 If `origin` already exists later:
 
 ```powershell
 cd J:\csgo
-git remote set-url origin <REPO_URL>
-git push -u origin master
+git remote set-url origin https://github.com/zy828373/my-resume
+git push -u origin master:cs2-monitor-upgrade
 ```
+
+Do not overwrite `main` unless the repository owner explicitly confirms that the old GitHub history can be replaced.
 
 ## If No Remote Is Available
 Create a Git bundle and move it manually:
