@@ -15,6 +15,8 @@ New feature and optimization work should follow this loop:
 7. Review the changed areas. If the user explicitly asks for subagents, split review by data, backend, frontend, and tests/docs before finalizing.
 8. Update `docs/progress.md` and test documentation when the change alters project status, known patterns, or coverage.
 
+For task-specific document routing, use `AGENTS.md`; for long context handoff, use the in-session template in `docs/handoff.md`.
+
 ## Runtime Flow
 ```mermaid
 flowchart LR
@@ -42,7 +44,8 @@ flowchart LR
 - `server/item-taxonomy.ts` owns item classification, recommendation scopes, sticker series normalization, and scanner matching.
 
 ## Autonomous Recommendation Flow
-- Candidate sources are loaded by scanner scope, then passed through a deterministic prefilter before windowing and random sampling.
+- Candidate sources prefer the CSQAQ page-list data used by the public detail view (`https://csqaq.com/detail`) with a 6-hour cache, then fall back to scoped queries, popular goods, and public page list sources when detail order is unavailable.
+- Detail-ordered candidates are passed through the deterministic prefilter before windowing, then sampled sequentially from top to bottom and left to right. Fallback sources keep the existing seeded sampling behavior.
 - Hard excluded candidates such as StatTrak, Souvenir, music kits, non-target stickers, and active-drop cases do not fall back into the sample pool when the filtered pool is small.
 - Analyzed items receive an `autonomousPool` decision with pool, admission score, supply grade, entry/alert eligibility, reasons, risk tags, and evidence source.
 - `/api/recommendations` includes `scanner.preFilter` diagnostics so the UI can show raw candidates, accepted candidates, rejects, shortage state, reject reason counts, and pool distribution.

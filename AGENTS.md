@@ -6,6 +6,16 @@
 - Start development with `npm run dev`.
 - Validate every change with `npm exec tsc -- --noEmit`, `npm test`, and `npm run build`.
 
+## Task-Type Reading Order
+- Philosophy: Favor the smallest reversible step that preserves the current stack, API contract, and local runtime data.
+- Every feature or optimization: read `AGENTS.md`, `docs/progress.md`, and `docs/architecture.md` first.
+- Test or coverage work: also read `docs/test-cases.md`.
+- Handoff, resume, or long-running work: also read `docs/handoff.md`.
+- API, shared types, or persistence work: inspect `shared/types.ts`, affected server routes/services/stores, and current callers before planning.
+- Frontend work: inspect affected hooks, page components, chart components, and shared types before planning.
+- Autonomous recommendation work: inspect `server/autonomous-pool.ts`, `server/analytics.ts`, recommendation UI consumers, and current scanner diagnostics before planning.
+- When a relevant `docs/*` contract, spec, or pattern file exists, read it before changing that area.
+
 ## Project Boundaries
 - Keep the current React/Vite/Express architecture. Do not migrate to Vue, Java, Spring Boot, or MySQL as part of routine work.
 - Treat `data/`, `.env`, logs, snapshots, and API keys as local runtime state. Do not commit real credentials or live market snapshots.
@@ -21,6 +31,9 @@
 ## New Request Workflow
 - Before acting on a new feature or optimization request, read `AGENTS.md`, `docs/progress.md`, and `docs/architecture.md`.
 - Turn substantial requests into user stories or a task plan before implementation.
+- For large, fuzzy, or user-facing changes, fill `docs/templates/01-scenario-alignment.md` before implementation.
+- Before technical design, fill `docs/templates/02-technical-contract.md` for data, API, state, integration, tests, and compatibility.
+- Use grill-me for blocking ambiguity: ask only the questions needed to clear open issues before implementation.
 - For each plan, state the target behavior, files likely to change, risks, compatibility constraints, and acceptance checks.
 - For large or risky changes, ask for confirmation before editing code.
 - Implement in small verifiable steps and keep unrelated refactors out of scope.

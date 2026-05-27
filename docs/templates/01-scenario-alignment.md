@@ -1,0 +1,23 @@
+# Story ID / Title
+
+## User Scenario
+- ...
+
+## Problem To Solve
+- ...
+
+## Target Behavior
+- ...
+
+## Scope
+- ...
+
+## Non-Goals
+- ...
+
+## Acceptance Criteria
+- Observable behavior: ...
+- Measurement: ...
+
+## Open Questions
+- [ ] Must be empty before implementation starts.

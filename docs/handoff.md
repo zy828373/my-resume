@@ -10,6 +10,36 @@ Start every new coding session by reading:
 - `docs/architecture.md`
 - `docs/test-cases.md`
 
+## In-Session Handoff Token
+Use this when context is getting long or another AI needs to continue the same task. Keep it concise and replace placeholders before handoff.
+
+```text
+## Handoff Token
+
+### Task Goal
+- ...
+
+### Files Read
+- AGENTS.md
+- docs/progress.md
+- docs/architecture.md
+
+### Work Completed
+- ...
+
+### Confirmed Conclusions
+- ...
+
+### Open Issues
+- ...
+
+### Suggested Next Step
+- Who should do what next, and which verification commands should run.
+
+### Sensitive Information
+- Do not copy tokens, real snapshots, or local absolute paths.
+```
+
 ## Current Stack
 - Frontend: React 19 + Vite 7 + TypeScript.
 - Backend: Express 5 + TypeScript + `tsx`.
@@ -91,7 +121,7 @@ npm run build
 The GitHub repository currently has an existing independent `main` history, so this upgrade is pushed to a safe branch named `cs2-monitor-upgrade`.
 
 ```powershell
-cd J:\csgo
+cd <REPO_PATH>
 git remote add origin https://github.com/zy828373/my-resume
 git push -u origin master:cs2-monitor-upgrade
 ```
@@ -99,7 +129,7 @@ git push -u origin master:cs2-monitor-upgrade
 If `origin` already exists later:
 
 ```powershell
-cd J:\csgo
+cd <REPO_PATH>
 git remote set-url origin https://github.com/zy828373/my-resume
 git push -u origin master:cs2-monitor-upgrade
 ```
@@ -110,7 +140,7 @@ Do not overwrite `main` unless the repository owner explicitly confirms that the
 Create a Git bundle and move it manually:
 
 ```powershell
-cd J:\csgo
+cd <REPO_PATH>
 git bundle create csgo-upgrade.bundle master
 ```
 
