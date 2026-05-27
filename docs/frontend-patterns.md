@@ -15,11 +15,11 @@
 ## App-Level Orchestration
 - `src/App.tsx` owns app-wide page selection, message, and error state (`src/App.tsx:356`).
 - `App` wires domain hooks together and passes cross-cutting callbacks such as `setMessage`, `setError`, and page activity flags (`src/App.tsx:361`, `src/App.tsx:476`).
-- Pages receive already-shaped data and handlers as props instead of fetching their own top-level data (`src/App.tsx:794`, `src/App.tsx:923`).
+- Pages and modals receive already-shaped data and handlers as props instead of fetching their own top-level data; the `AppShell` page composition is at `src/App.tsx:794`, and the `HolderDetailModal` callback wiring at `src/App.tsx:923` is an example of modal-side prop wiring.
 - Keep new page-level workflows inside existing hooks or explicit callbacks before adding more state directly to `App.tsx`.
 
 ## Pages, Cards, Charts, And Layout
-- Existing component layers are `pages`, `cards`, `charts`, `layout`, and `primitives`; do not document or introduce nonexistent directories as established structure.
+- Existing component layers are `pages`, `cards`, `charts`, `layout`, and `primitives`; do not document or introduce nonexistent directories as established structure. The repository also has `src/components/effects/` for motion utilities and `src/components/Playground.tsx` as a dev-only debug surface (`#playground` hash); neither counts as a business layer.
 - `layout` owns the app frame: `AppShell` renders topbar, nav, feedback, optional market strip, and page body (`src/components/layout/AppShell.tsx:25`).
 - `pages` compose workflows and state-derived sections. `RecommendationsPage` is prop-driven and handles its local display derivations (`src/components/pages/RecommendationsPage.tsx:71`, `src/components/pages/RecommendationsPage.tsx:150`).
 - `cards` hold repeated item panels and page subpanels; recommendation pages compose existing cards instead of embedding all card markup inline (`src/components/pages/RecommendationsPage.tsx:16`).

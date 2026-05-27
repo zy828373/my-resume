@@ -15,7 +15,7 @@
 ## API Envelope And Error Handling
 - Success responses use `jsonOk(data)` to return `{ ok: true, data }` (`server/index.ts:331`).
 - Error responses should go through `sendJsonError`, which emits `{ ok: false, error }` with a classified status (`server/index.ts:369`).
-- `getApiStatus` handles `ApiError`, `ZodError`, and `status` / `statusCode` fields (`server/index.ts:353`).
+- `getApiStatus` handles `ApiError`, `ZodError`, and `status` / `statusCode` fields, and overrides a raw `500` with the caller's `fallbackStatus` when one is supplied (`server/index.ts:353`).
 - `classifyAnalysisError` maps common analysis/upstream messages to 400, 428, 502, 503, 504, or fallback 500 (`server/index.ts:382`).
 - The `/api` error middleware delegates to `sendJsonError`, and the `/api` fallback route emits a 404 envelope (`server/index.ts:3236`, `server/index.ts:3245`).
 - There is currently no `server/api-response.ts` helper; do not document it as existing.
@@ -61,7 +61,7 @@
 - Applying a pool decision to an `AnalysisResponse` enters through `attachAutonomousPoolDecision` (`server/autonomous-pool.ts:654`).
 - Analytics uses autonomous pool decisions when building recommendation cards (`server/analytics.ts:2008`).
 - Any hard-rule change that affects `server/autonomous-pool.ts` or the future autonomous pool spec requires separate confirmation under V5.0 section 1.3.
-- After `docs/specs/autonomous-pool.md` exists, update that spec before changing recommendation pool behavior.
+- `docs/specs/autonomous-pool.md` is the source of truth for the autonomous pool; update that spec before changing recommendation pool behavior.
 
 ## Compatibility Rules
 - Do not change the `{ ok, data, error }` envelope as routine backend work.

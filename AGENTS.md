@@ -11,9 +11,9 @@
 - Every feature or optimization: read `AGENTS.md`, `docs/progress.md`, and `docs/architecture.md` first.
 - Test or coverage work: also read `docs/test-cases.md`.
 - Handoff, resume, or long-running work: also read `docs/handoff.md`.
-- API, shared types, or persistence work: inspect `shared/types.ts`, affected server routes/services/stores, and current callers before planning.
-- Frontend work: inspect affected hooks, page components, chart components, and shared types before planning.
-- Autonomous recommendation work: inspect `server/autonomous-pool.ts`, `server/analytics.ts`, recommendation UI consumers, and current scanner diagnostics before planning.
+- API, shared types, or persistence work: inspect `shared/types.ts`, affected server routes/services/stores, and current callers before planning; also read `docs/api-contract.md` and `docs/backend-patterns.md`.
+- Frontend work: inspect affected hooks, page components, chart components, and shared types before planning; also read `docs/frontend-patterns.md`.
+- Autonomous recommendation work: inspect `server/autonomous-pool.ts`, `server/analytics.ts`, recommendation UI consumers, and current scanner diagnostics before planning; pool rules are pinned in `docs/specs/autonomous-pool.md`.
 - When a relevant `docs/*` contract, spec, or pattern file exists, read it before changing that area.
 
 ## Project Boundaries

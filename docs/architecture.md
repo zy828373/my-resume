@@ -50,6 +50,7 @@ flowchart LR
 - Analyzed items receive an `autonomousPool` decision with pool, admission score, supply grade, entry/alert eligibility, reasons, risk tags, and evidence source.
 - `/api/recommendations` includes `scanner.preFilter` diagnostics so the UI can show raw candidates, accepted candidates, rejects, shortage state, reject reason counts, and pool distribution.
 - v1 deliberately marks unsupported signals as degraded rather than pretending to know them: precise trade-up EV, full-network inventory, unique sticker craft demand, team heat, and authoritative live drop-pool state need future data sources or maintained rule tables.
+- Pool rules, admission thresholds, scoring formulas, supply grades, and unsupported-signal handling are pinned in `docs/specs/autonomous-pool.md`; that spec must be updated before changing recommendation pool behavior.
 
 ## Frontend Responsibilities
 - `src/App.tsx` coordinates app-level state, routes, and data loading.
