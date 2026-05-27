@@ -21,7 +21,7 @@
 - US-007 Shared API type consolidation: completed.
 - US-008 ECharts lazy loading and chunk reduction: completed.
 - US-009 Health status API/page: completed.
-- US-010 Autonomous recommendation pool prefilter: completed for supported v1 deterministic rules. Unsupported advanced signals such as precise trade-up EV, full-network inventory, unique sticker craft demand, and team heat remain degraded/unsupported policy inputs; broader per-signal regression coverage is still planned.
+- US-010 Autonomous recommendation pool prefilter: completed for supported v1 deterministic rules; spec 已固化. Unsupported advanced signals such as precise trade-up EV, full-network inventory, unique sticker craft demand, and team heat remain degraded/unsupported policy inputs; broader per-signal regression coverage is still planned.
 
 ## Verification Log
 - 2026-05-05: Created Git baseline before upgrade work.
@@ -36,3 +36,9 @@
 - 2026-05-05: Added the durable new-request workflow to project memory: read docs first, convert substantial work into user stories and plans, implement in small steps, verify with typecheck/tests/build, review changed areas, and update progress when project patterns change.
 - 2026-05-05: Added autonomous recommendation pool v1: deterministic candidate prefilter, analysis-level admission scoring, `candidate_core/candidate_low_weight/watchlist/risk_only/excluded` decisions, scanner prefilter diagnostics, frontend pool visibility, and focused tests.
 - 2026-05-05: Fixed GPT-5.5 parallel review findings for autonomous pool scope accuracy, sample-only supply evidence, partial frontend pool decisions, scanner recommendation cache expiry, sync autofill waiting, startup scanner generation, window shortage diagnostics, and coverage/test documentation. Verified with `npm exec tsc -- --noEmit`, `npm test`, and `npm run build`.
+- 2026-05-26: Completed architecture optimization V5.0 phase 0 document governance: added task-type reading order, in-session handoff template, architecture cross-reference, and removed local absolute path examples from handoff docs.
+- 2026-05-26: Completed architecture optimization V5.0 phase 1 document governance: added scenario alignment and technical contract templates, then linked them from the new-request workflow.
+- 2026-05-26: Completed architecture optimization V5.0 phase 2.1 API contract documentation for the response envelope, frontend parsing, status conventions, time and ID naming, and scanner prefilter diagnostics.
+- 2026-05-27: Completed architecture optimization V5.0 phase 2.2 frontend patterns documentation for shared type imports, hooks, page/card/chart/layout layering, stale-response guards, UI states, ECharts lazy loading, responsive layout, and compatibility rules.
+- 2026-05-27: Completed architecture optimization V5.0 phase 2.3 backend patterns documentation for Express assembly, API errors, services, stores, upstream clients, scanner runtime, analytics boundaries, autonomous pool hooks, and compatibility rules.
+- 2026-05-27: Completed architecture optimization V5.0 phase 3 autonomous pool spec documentation for hard exclusions, pool decisions, admission scoring, supply grading, explanation fields, prefilter diagnostics, unsupported signals, and change-process compatibility.
